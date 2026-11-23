@@ -170,6 +170,7 @@ def build_syllables(lyrics: Lyrics, words: list[aligner.AlignedWord], p: PitchTr
 GOLDEN_SHARE = 0.04       # library: median 4 % of notes
 GOLDEN_MIN_S = 0.3
 FREESTYLE_MAX_VOICED = 0.1
+FREESTYLE_MIN_S = 0.3
 
 
 _VOCABLES = {"ah", "aah", "oh", "ooh", "oo", "uh", "la", "na", "da", "yeah", "hey", "mm", "mmm", "hmm",
@@ -337,8 +338,15 @@ def mark_note_kinds(syl: list[Syllable]) -> None:
     the same notes in every repetition of the line."""
     import os
 
+    # freestyle only where really nothing is sung on a pitch: a long unvoiced syllable or a
+    # spoken/shouted line.  A short word the pitch tracker missed ("it's") stays a normal note
+    # (with its neighbour's pitch) - a freestyle note shows but gives no points.
+    line_voiced: dict[int, list[float]] = {}
     for s in syl:
-        if s.voiced < FREESTYLE_MAX_VOICED and s.end - s.start >= 0.08:
+        line_voiced.setdefault(s.line, []).append(s.voiced)
+    for s in syl:
+        spoken_line = float(np.mean(line_voiced[s.line])) < 0.2
+        if s.voiced < FREESTYLE_MAX_VOICED and (s.end - s.start >= FREESTYLE_MIN_S or spoken_line):
             s.kind = "F"
     if os.environ.get("ULTRAAI_GOLDEN", "jumps") == "legacy":
         return _golden_legacy(syl)
