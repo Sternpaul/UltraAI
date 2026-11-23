@@ -9,6 +9,7 @@ from another site cannot add that header without a CORS preflight, which we neve
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import traceback
@@ -23,7 +24,10 @@ from ..ultrastar.validator import validate
 from ..ultrastar.writer import dumps
 from .config import Settings
 from .doc import DocError, doc_to_song, song_to_doc
+from .logs import TRACE, LEVELS, ring
 from .store import Library, SongState
+
+log = logging.getLogger("ultraai.studio")
 
 WEB = Path(__file__).with_name("web")
 
@@ -73,9 +77,14 @@ class Queue:
                 self._wake.wait(10)
                 self._wake.clear()
                 continue
+            st = self.lib.state(sid)
+            log.info("processing %s - %s (%s)", st.artist, st.title, sid)
+            t0 = time.time()
             try:
-                self.make_processor().process(sid, stage=lambda s, sid=sid: self.lib.update(sid, stage=s))
+                state = self.make_processor().process(sid, stage=lambda s, sid=sid: self._progress(sid, s))
+                log.info("%s - %s: %s after %.0f s", st.artist, st.title, state, time.time() - t0)
             except Exception as exc:  # noqa: BLE001 - keep the queue alive
+                log.exception("processing %s - %s failed", st.artist, st.title)
                 self.log.append(traceback.format_exc()[-2000:])
                 try:
                     self.lib.update(sid, state="error", stage="", error=f"{type(exc).__name__}: {exc}", job={})
@@ -83,6 +92,19 @@ class Queue:
                     pass
             finally:
                 self._busy.discard(sid)
+                try:
+                    self.lib.update(sid, progress={})
+                except KeyError:
+                    pass
+
+    def _progress(self, sid: str, p) -> None:
+        if isinstance(p, dict):
+            old = self.lib.state(sid).stage
+            if p.get("stage") and p.get("stage") != old:
+                log.debug("%s: %s", sid, p["stage"])
+            self.lib.update(sid, stage=p.get("stage") or old, progress=p)
+        else:
+            self.lib.update(sid, stage=p)
 
 
 # ---------------------------------------------------------------- API models
@@ -134,8 +156,15 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     @app.middleware("http")
     async def guard(request: Request, call_next):
         if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get("x-ultraai") != "1":
+            log.warning("refused %s %s without X-UltraAI header", request.method, request.url.path)
             return JSONResponse({"detail": "missing X-UltraAI header"}, status_code=403)
-        return await call_next(request)
+        t = time.time()
+        resp = await call_next(request)
+        log.log(TRACE, "%s %s -> %s (%.0f ms)", request.method, request.url.path, resp.status_code,
+                1000 * (time.time() - t))
+        if resp.status_code >= 500:
+            log.error("%s %s -> %s", request.method, request.url.path, resp.status_code)
+        return resp
 
     def get_state(sid: str) -> SongState:
         try:
@@ -146,7 +175,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     def card(st: SongState) -> dict:
         d = {k: getattr(st, k) for k in ("id", "artist", "title", "language", "state", "stage", "error",
                                          "source", "created", "updated", "priority", "issues",
-                                         "lyrics_source", "video", "cover")}
+                                         "lyrics_source", "video", "cover", "progress")}
         d["open_issues"] = max(0, st.issues - len(st.dismissed))
         return d
 
@@ -349,6 +378,11 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
                 cur = getattr(settings, k)
                 setattr(settings, k, type(cur)(v) if isinstance(cur, (bool, int, str)) else v)
         settings.save()
+        if "log_level" in body:
+            from .logs import set_level
+
+            set_level(settings.log_level)
+        log.info("settings saved: %s", ", ".join(sorted(body)))
         return {"ok": True, "restart_needed": "library" in body}
 
     @app.post("/api/settings/test")
@@ -360,8 +394,16 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
             return {"ok": False, "error": str(exc)}
 
     @app.get("/api/log")
-    def log():
-        return queue.log[-20:]
+    def get_log(after: int = 0, level: str = "info"):
+        return ring.since(after, LEVELS.get(level, logging.INFO))
+
+    @app.get("/api/songs/{sid}/worker-log")
+    def worker_log(sid: str):
+        get_state(sid)
+        f = lib.folder(sid) / ".studio" / "worker.log"
+        from fastapi.responses import PlainTextResponse
+
+        return PlainTextResponse(f.read_text(encoding="utf-8", errors="replace") if f.exists() else "")
 
     if WEB.exists():
         from fastapi.staticfiles import StaticFiles
@@ -373,7 +415,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
 def make_processor(settings: Settings, lib: Library):
     from .processors import LocalProcessor, SshProcessor, SshTransport
 
-    sep = settings.extra.get("separation")
+    sep = settings.extra.get("separation") or settings.separation
     if settings.processor == "local":
         return LocalProcessor(lib, separation=sep)
     if not settings.ssh_host:
@@ -417,6 +459,12 @@ def run(port: int = 8766, open_window: bool = True) -> None:
             open_window_or_browser(url)
         return
     settings = Settings.load()
+    from .config import config_dir
+    from .logs import setup
+
+    setup(settings.log_level, config_dir())
+    log.info("UltraAI Studio on %s, library %s, processing %s %s", url, settings.library, settings.processor,
+             settings.ssh_host)
     app = create_app(settings)
     if not open_window:
         uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

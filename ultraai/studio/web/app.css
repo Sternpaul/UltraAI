@@ -83,6 +83,34 @@ dialog textarea { width: 100%; font-family: ui-monospace, Consolas, monospace; r
 }
 #toast.show { opacity: .95; }
 
+a.button-like { text-decoration: none; color: var(--fg); padding: 5px 10px; border-radius: 6px; border: 1px solid transparent; }
+a.button-like:hover { border-color: var(--accent); }
+
+/* ---- progress ---- */
+.bar { height: 5px; border-radius: 3px; background: var(--panel-2); overflow: hidden; margin-top: 4px; }
+.bar > span { display: block; height: 100%; background: var(--accent); transition: width .8s linear; }
+.status .chip { cursor: default; }
+.status button.linkish { border: 0; background: none; padding: 0; color: var(--accent); font-size: 12.5px; text-decoration: underline; }
+.steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.steps li { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; }
+.steps .ico { text-align: center; font-weight: 700; }
+.steps .done .ico { color: var(--good); }
+.steps .running .ico { color: var(--accent); }
+.steps .pending, .steps .skipped { color: var(--muted); }
+.steps .running .lbl { font-weight: 600; }
+.steps .dur { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12.5px; }
+.logpre { max-height: 40vh; overflow: auto; font: 12px/1.35 ui-monospace, Consolas, monospace; white-space: pre-wrap; background: var(--panel-2); padding: 8px; border-radius: 6px; }
+
+/* ---- log view ---- */
+.logview { height: 100%; display: flex; flex-direction: column; padding: 10px 14px; gap: 8px; }
+.logview .bar-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.logview .lines { flex: 1; min-height: 0; overflow: auto; font: 12.5px/1.4 ui-monospace, Consolas, monospace; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 8px; }
+.logline { white-space: pre-wrap; word-break: break-word; }
+.logline .lv { display: inline-block; width: 64px; font-weight: 700; }
+.logline.error .lv { color: var(--bad); } .logline.warning .lv { color: var(--warn); }
+.logline.debug, .logline.trace { color: var(--muted); }
+.logline .nm { color: var(--muted); }
+
 /* ---- library ---- */
 .library { max-width: 1200px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .addbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -91,13 +119,14 @@ dialog textarea { width: 100%; font-family: ui-monospace, Consolas, monospace; r
 .filters input[type=search] { margin-left: auto; min-width: 200px; }
 .songs { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
 .song {
-  display: grid; grid-template-columns: 1fr 190px 90px auto; gap: 12px; align-items: center;
+  display: grid; grid-template-columns: 1fr 280px 80px auto; gap: 12px; align-items: center;
   padding: 9px 12px; border-bottom: 1px solid var(--line);
 }
 .song:last-child { border-bottom: 0; }
 .song .name { min-width: 0; }
 .song .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .song .artist, .song .sub { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.song .status { min-width: 0; }
 .song .err { color: var(--bad); font-size: 12.5px; white-space: normal; }
 .song .acts { display: flex; gap: 6px; justify-content: flex-end; }
 .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--panel-2); }

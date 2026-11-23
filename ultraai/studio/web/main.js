@@ -18,7 +18,10 @@ async function route() {
   if (cleanup) { cleanup(); cleanup = null; }
   view.replaceChildren();
   const m = location.hash.match(/^#\/song\/([\w-]+)/);
-  if (m) {
+  if (location.hash.startsWith("#/log")) {
+    const { openLog } = await import("./log.js");
+    cleanup = openLog(view, crumbs);
+  } else if (m) {
     const { openEditor } = await import("./editor.js");
     cleanup = await openEditor(view, m[1], crumbs);
   } else {
@@ -94,13 +97,26 @@ function library() {
         onclick: () => getExtras(s) }, "Video"));
     acts.push(h("button", { type: "button", class: "ghost small", title: "Remove from library", "aria-label": `Remove ${s.title}`, onclick: () => remove(s) }, "✕"));
     const sub = s.stage ? s.stage : s.lyrics_source ? `lyrics: ${s.lyrics_source}` : "";
+    const p = s.progress || {};
+    const busy = ["processing", "downloading"].includes(s.state);
+    let bar = null, eta = null;
+    if (busy && p.stages?.length) {
+      const done = p.stages.filter(x => ["done", "skipped"].includes(x.state)).length;
+      const total = p.stages.length;
+      const frac = Math.min(1, (done + (p.frac ?? 0)) / total);
+      bar = h("div", { class: "bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100",
+        "aria-valuenow": String(Math.round(frac * 100)), "aria-label": "Progress" }, h("span", { style: `width:${(frac * 100).toFixed(1)}%` }));
+      if (Number.isFinite(p.eta)) eta = `about ${fmtDur(p.eta)} left`;
+    }
+    const stepsBtn = busy || p.stages?.length || s.state === "error"
+      ? h("button", { type: "button", class: "linkish", onclick: () => stepsDialog(s.id) }, busy ? "steps" : "details") : null;
     return h("div", { class: "song", role: "listitem" },
       h("div", { class: "name" },
         h("div", { class: "title" }, s.title || "(untitled)"),
         h("div", { class: "artist" }, s.artist || "unknown artist"),
         s.error ? h("div", { class: "err" }, s.error) : null),
-      h("div", { class: "status" }, h("span", { class: `chip ${s.state}` }, STATE_LABEL[s.state] || s.state),
-        sub ? h("div", { class: "sub" }, sub) : null),
+      h("div", { class: "status" }, h("span", { class: `chip ${s.state}` }, STATE_LABEL[s.state] || s.state), " ", stepsBtn,
+        sub ? h("div", { class: "sub" }, sub, eta ? ` · ${eta}` : "") : null, bar),
       h("div", { class: "issues" }, s.state === "needs_review" ? `${s.open_issues} issue${s.open_issues === 1 ? "" : "s"}` : ""),
       h("div", { class: "acts" }, acts));
   }
@@ -119,7 +135,7 @@ function library() {
   }
 
   async function load() {
-    try { songs = await api("/api/songs"); render(); } catch (e) { toast(`Backend not reachable: ${e.message}`); }
+    try { songs = await api("/api/songs"); render(); refreshSteps(songs); } catch (e) { toast(`Backend not reachable: ${e.message}`); }
   }
   load();
   const timer = setInterval(() => { if (!document.hidden) load(); }, 3000);
@@ -127,6 +143,58 @@ function library() {
   return () => { clearInterval(timer); libraryReload = null; };
 }
 let libraryReload = null;
+
+function fmtDur(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return `${sec} s`;
+  const m = Math.floor(sec / 60), r = sec % 60;
+  return m < 60 ? `${m} min${r && m < 10 ? ` ${r} s` : ""}` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+// ------------------------------------------------------------------ processing steps dialog
+let stepsFor = null;
+const STEP_ICON = { done: "✓", running: "●", pending: "○", skipped: "–", error: "✕" };
+async function stepsDialog(id) {
+  stepsFor = id;
+  const dlg = document.getElementById("steps-dialog");
+  const s = (await api("/api/songs")).find(x => x.id === id);
+  if (!s) return;
+  fillSteps(s);
+  const det = document.getElementById("steps-log");
+  det.open = false;
+  det.ontoggle = async () => {
+    if (!det.open) return;
+    const pre = det.querySelector("pre");
+    pre.textContent = "Loading…";
+    try { pre.textContent = (await api(`/api/songs/${id}/worker-log`)) || "No server log yet (it arrives with the results)."; }
+    catch (e) { pre.textContent = e.message; }
+  };
+  dlg.addEventListener("close", () => { stepsFor = null; }, { once: true });
+  dlg.showModal();
+}
+function fillSteps(s) {
+  document.getElementById("steps-title").textContent = `${s.artist} – ${s.title}`;
+  const p = s.progress || {};
+  const stages = p.stages || [];
+  const list = document.getElementById("steps-list");
+  list.replaceChildren(...(stages.length ? stages.map(x => {
+    let dur = "";
+    if (x.state === "done") dur = x.note === "cached" ? "already done" : x.seconds ? fmtDur(x.seconds) : "";
+    else if (x.state === "running") dur = x.expected ? `${fmtDur(x.seconds || 0)} of ~${fmtDur(x.expected)}` : x.seconds ? fmtDur(x.seconds) : "";
+    else if (x.state === "pending") dur = x.expected ? `~${fmtDur(x.expected)}` : "";
+    else if (x.state === "skipped") dur = x.note || "";
+    return h("li", { class: x.state }, h("span", { class: "ico", "aria-hidden": "true" }, STEP_ICON[x.state] || "?"),
+      h("span", { class: "lbl" }, x.label), h("span", { class: "dur" }, dur));
+  }) : [h("li", {}, h("span", {}), h("span", { class: "muted" }, s.error || s.stage || "No details yet"), h("span", {}))]));
+  const eta = document.getElementById("steps-eta");
+  eta.textContent = ["processing", "downloading"].includes(s.state) && Number.isFinite(p.eta)
+    ? `About ${fmtDur(p.eta)} left${p.elapsed ? ` · running for ${fmtDur(p.elapsed)}` : ""}` : (s.error || "");
+}
+function refreshSteps(songs) {
+  if (!stepsFor) return;
+  const s = songs.find(x => x.id === stepsFor);
+  if (s) fillSteps(s);
+}
 
 function sessionStorageGet(k) { try { return sessionStorage.getItem(`ultraai.${k}`); } catch { return null; } }
 function sessionStorageSet(k, v) { try { sessionStorage.setItem(`ultraai.${k}`, v); } catch { /* ignore */ } }
@@ -181,7 +249,9 @@ const sform = document.getElementById("settings-form");
 document.getElementById("open-settings").addEventListener("click", async () => {
   const st = await api("/api/settings");
   for (const k of ["library", "ssh_host", "ssh_port", "remote_dir"]) sform.elements[k].value = st[k] || "";
-  sform.elements.youtube_audio.value = st.youtube_audio || "m4a";
+  sform.elements.youtube_audio.value = st.youtube_audio || "best";
+  sform.elements.separation.value = st.separation || "htdemucs";
+  sform.elements.log_level.value = st.log_level || "info";
   sform.elements.youtube_video.value = st.youtube_video || "none";
   sform.elements.youtube_cover.checked = !!st.youtube_cover;
   for (const r of sform.querySelectorAll("[name=processor]")) r.checked = r.value === st.processor;
@@ -193,7 +263,8 @@ function settingsBody() {
   const f = sform.elements;
   return { library: f.library.value.trim(), processor: sform.querySelector("[name=processor]:checked")?.value || "ssh",
     ssh_host: f.ssh_host.value.trim(), ssh_port: Number(f.ssh_port.value) || 0, remote_dir: f.remote_dir.value.trim() || "UltraAI",
-    youtube_audio: f.youtube_audio.value, youtube_video: f.youtube_video.value, youtube_cover: f.youtube_cover.checked };
+    youtube_audio: f.youtube_audio.value, youtube_video: f.youtube_video.value, youtube_cover: f.youtube_cover.checked,
+    separation: f.separation.value, log_level: f.log_level.value };
 }
 document.getElementById("settings-test").addEventListener("click", async () => {
   const out = document.getElementById("settings-test-result");

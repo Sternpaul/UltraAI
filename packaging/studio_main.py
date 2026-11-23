@@ -19,7 +19,8 @@ def _frozen_setup() -> None:
 
     log_dir = config_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
-    log = open(log_dir / "studio.log", "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+    # stray prints / crashes; the real log (studio.log) is written by ultraai.studio.logs
+    log = open(log_dir / "console.log", "a", encoding="utf-8", buffering=1)  # noqa: SIM115
     if sys.stdout is None or not sys.stdout.isatty():
         sys.stdout = log
     if sys.stderr is None or not sys.stderr.isatty():
@@ -74,9 +75,25 @@ def self_test(out: Path) -> int:
             lines.append(f"BAD import {mod}: {exc}")
     import shutil
 
-    for tool in ("deno", "ssh", "scp"):
+    for tool in ("deno", "ffmpeg", "ssh", "scp"):
         lines.append(f"{'OK ' if shutil.which(tool) else '-- '} tool {tool}: {shutil.which(tool)}")
-    ok &= bool(shutil.which("deno"))
+    ok &= bool(shutil.which("deno")) and bool(shutil.which("ffmpeg"))
+    # the WebM -> Ogg remux really works with the bundled ffmpeg
+    try:
+        import subprocess
+
+        from ultraai.studio.importer import remux_audio
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "t.webm"
+            subprocess.run([shutil.which("ffmpeg"), "-loglevel", "error", "-f", "lavfi", "-i", "sine=f=440:d=1",
+                            "-c:a", "libopus", str(src)], check=True, creationflags=0x08000000)
+            good = remux_audio(src).suffix == ".ogg"
+    except Exception as exc:  # noqa: BLE001
+        good = False
+        lines.append(f"remux error: {exc}")
+    ok &= good
+    lines.append(f"{'OK ' if good else 'BAD'} opus remux")
     lines.append("RESULT " + ("PASS" if ok else "FAIL"))
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return 0 if ok else 1

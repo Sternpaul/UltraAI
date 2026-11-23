@@ -6,7 +6,11 @@ import re
 import tempfile
 from pathlib import Path
 
+import logging
+
 from .store import Library, SongState
+
+log = logging.getLogger("ultraai.import")
 
 _NOISE = re.compile(r"\s*[(\[](?:official|lyric|lyrics|audio|video|music video|hd|hq|4k|visualizer|"
                     r"remaster(?:ed)?(?: \d{4})?|explicit|clip officiel|videoclip)[^)\]]*[)\]]", re.I)
@@ -50,7 +54,10 @@ def import_file(lib: Library, path: Path, original_name: str | None = None, move
 def youtube_info(url: str) -> dict:
     import yt_dlp
 
-    with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "skip_download": True}) as y:
+    from .logs import YtdlpLogger
+
+    with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "skip_download": True,
+                           "logger": YtdlpLogger()}) as y:
         return y.extract_info(url, download=False)
 
 
@@ -71,11 +78,41 @@ def video_format(quality: str) -> str | None:
 def _download(url: str, fmt: str, dest: Path, hook=None) -> Path:
     import yt_dlp
 
+    from .logs import YtdlpLogger
+
     opts = {"quiet": True, "noplaylist": True, "format": fmt, "outtmpl": str(dest / "dl.%(ext)s"),
-            "progress_hooks": [hook] if hook else []}
+            "progress_hooks": [hook] if hook else [], "logger": YtdlpLogger(), "verbose": True}
     with yt_dlp.YoutubeDL(opts) as y:
         y.download([url])
     return next(p for p in dest.iterdir() if p.name.startswith("dl."))
+
+
+def ffmpeg_path() -> str | None:
+    import shutil
+
+    return shutil.which("ffmpeg")
+
+
+def remux_audio(src: Path) -> Path:
+    """WebM/Opus -> Ogg/Opus: same audio stream, no re-encoding (lossless, ~1 s), in a
+    container every USDX build plays.  Unchanged if ffmpeg is missing or it fails."""
+    import subprocess
+
+    if src.suffix.lower() not in (".webm", ".mka", ".mkv"):
+        return src
+    ff = ffmpeg_path()
+    if not ff:
+        log.warning("ffmpeg not found: keeping %s", src.name)
+        return src
+    dst = src.with_suffix(".ogg")
+    r = subprocess.run([ff, "-nostdin", "-loglevel", "error", "-y", "-i", str(src), "-vn", "-c:a", "copy", str(dst)],
+                       capture_output=True, text=True, creationflags=0x08000000 if __import__("os").name == "nt" else 0)
+    if r.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+        log.warning("remux of %s failed: %s", src.name, r.stderr.strip()[-300:])
+        return src
+    log.debug("remuxed %s -> %s", src.name, dst.name)
+    src.unlink(missing_ok=True)
+    return dst
 
 
 def _cover_url(info: dict) -> str | None:
@@ -134,7 +171,9 @@ def import_youtube(lib: Library, url: str, progress=None, settings=None) -> Song
         fmt = AUDIO_FORMATS.get(getattr(settings, "youtube_audio", "m4a"), AUDIO_FORMATS["m4a"])
         with tempfile.TemporaryDirectory() as tmp:
             got = _download(url, fmt, Path(tmp), _hook(progress, "audio"))
+            got = remux_audio(got)
             lib.add_audio(st.id, got, move=True)
+            log.info("downloaded %s - %s: %s", artist, title, got.suffix)
         # the song can be processed while the video downloads
         lib.update(st.id, state="queued", stage="")
         if settings is not None:
