@@ -26,25 +26,25 @@
     <label>Song library folder <input name="library" required></label>
     <fieldset>
       <legend>Processing</legend>
-      <label class="row"><input type="radio" name="processor" value="ssh"> On my server (SSH)</label>
-      <label class="row"><input type="radio" name="processor" value="local"> On this computer (slow)</label>
+      <label class="row"><input type="radio" name="processor" value="ssh"> On my server via SSH</label>
+      <label class="row"><input type="radio" name="processor" value="local"> On this computer – slow</label>
       <label>SSH host <input name="ssh_host" placeholder="user@server or a Host from ~/.ssh/config"></label>
       <label>SSH port <input name="ssh_port" type="number" min="0" max="65535" placeholder="22"></label>
       <label>UltraAI folder on the server <input name="remote_dir" placeholder="UltraAI"></label>
       <label>Vocal separation
         <select name="separation">
-          <option value="htdemucs">Standard – about 5 min per song (all accuracy numbers use this)</option>
-          <option value="melband">Cleaner vocals – about 20–30 min per song, not yet measured</option>
+          <option value="htdemucs">HTDemucs by Meta – about 5 min per song, all accuracy numbers use it</option>
+          <option value="melband">MelBand RoFormer – cleaner vocals, about 20–30 min per song, not measured yet</option>
         </select></label>
     </fieldset>
     <fieldset>
       <legend>YouTube downloads</legend>
       <label>Audio
         <select name="youtube_audio">
-          <option value="best">Best available (usually Opus ~130–160 kbit/s, saved as .ogg without re-encoding)</option>
-          <option value="m4a">AAC / M4A (~128 kbit/s)</option>
+          <option value="best">Best available – usually Opus at about 130–160 kbit/s, saved as .ogg without re-encoding</option>
+          <option value="m4a">AAC / M4A – about 128 kbit/s</option>
         </select></label>
-      <label>Music video (shown behind the lyrics in USDX)
+      <label>Music video – shown behind the lyrics in USDX
         <select name="youtube_video">
           <option value="none">No video</option>
           <option value="720">Up to 720p</option>
@@ -53,7 +53,7 @@
         </select></label>
       <label class="row"><input type="checkbox" name="youtube_cover"> Use the video thumbnail as cover</label>
       <p class="muted">YouTube's best free audio is about 130–160 kbit/s whatever you pick; AAC and Opus sound
-        nearly the same there. Videos are downloaded as H.264 where possible (plays everywhere).</p>
+        nearly the same there. Videos are downloaded as H.264 where possible, which plays everywhere.</p>
     </fieldset>
     <label>Log detail
       <select name="log_level">
@@ -61,7 +61,7 @@
         <option value="warning">Warnings</option>
         <option value="info">Normal</option>
         <option value="debug">Debug</option>
-        <option value="trace">Everything (every request, SSH command and download message)</option>
+        <option value="trace">Everything – every request, SSH command and download message</option>
       </select></label>
     <p class="muted" id="settings-test-result"></p>
     <div class="actions">
