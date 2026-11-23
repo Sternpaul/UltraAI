@@ -1,0 +1,41 @@
+[project]
+name = "ultraai"
+version = "0.1.0"
+description = "Lyrics-first UltraStar karaoke file generator"
+requires-python = ">=3.11"
+# base = what the Studio (Studio machine app) needs; the processing worker adds [worker]
+dependencies = [
+  "fastapi", "uvicorn", "python-multipart",
+  "mutagen",
+  "yt-dlp",
+  "pywebview; sys_platform == 'win32' or sys_platform == 'darwin'",
+]
+
+[project.optional-dependencies]
+worker = [
+  "numpy", "scipy", "soundfile", "librosa", "pyphen",
+  "torch>=2.6,<2.9",          # torchaudio 2.8 still ships MMS_FA + forced_align
+  "torchaudio>=2.6,<2.9",
+  "audio-separator[cpu]", "audioread",
+  "swift-f0",
+  "faster-whisper",           # what is actually sung (structure check)
+  "uroman",                   # romanization of any script for the aligner
+  "scikit-learn",             # issue risk model
+]
+dev = ["pytest", "httpx"]
+
+[project.scripts]
+ultraai = "ultraai.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["ultraai*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+ultraai = ["review_page.html", "issue_model.pkl", "studio/web/*"]
