@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.egg-info/
+/songs/
+/work/
+/out/
+/library/
+/jobs/
+/dist/
+/build/
+*.pkl.prev
+ultraai/issue_model.prev.pkl
+*.wav
+*.m4a
+*.mp3
