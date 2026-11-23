@@ -359,3 +359,18 @@ Fast experiment loop (no separation needed, ~4 s/song from cache):
         .venv/bin/python -u scripts/regen_library.py TAG m2,m3
     .venv/bin/python scripts/compare_runs.py base:m2 TAG:m3
     .venv/bin/python scripts/m3_debug.py "song"      # M3 decisions per line
+
+### Notes: repeats, golden notes, melisma (2026-11-23)
+
+- Hand-made library files: 79 % of repeated lines (same words, same note count) have
+  identical pitches (per-song median 84 %), so repeats should match.
+- Harmonizing repeats with the median of per-line pitches *lowered* pitch-class accuracy
+  (70.5 -> 66.5 %, 55 songs); copying melisma shapes was the worst part. Pooling the sung
+  pitch frames of all repeats and taking the most common semitone keeps accuracy
+  (70.5 -> 70.7 %, 25 songs) and makes repeats identical. Repeats that disagree
+  (key change, variation) are not changed but become "repeat" review issues.
+- Golden notes: notes reached by a pitch jump >= 4 semitones (octave jumps treated as tracker
+  errors) scored by jump + distance from the line's range, >= 0.3 s, voiced; top 4 %, and
+  the same positions in every repeat. (Old rule: long steady notes in repeated lines.)
+- Melisma: long wobbly syllables no longer give up above 4 pitch steps; short steps are
+  merged until at most 6 remain.

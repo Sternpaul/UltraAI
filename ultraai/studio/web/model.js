@@ -80,6 +80,38 @@ export function applyLineText(line, text, pitchAt) {
   return true;
 }
 
+/** Lines with the same words (case/punctuation ignored) as ``line``, except itself. */
+export function repeatsOf(lines, line) {
+  const key = l => lineText(l).toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim();
+  const k = key(line);
+  return k ? lines.filter(l => l !== line && key(l) === k) : [];
+}
+
+/** Copy pitches and note kinds (golden, freestyle...) to the repeats; timing stays.
+ *  Returns [updated, skipped] (skipped: different number of notes). */
+export function lineAt(lines, t) {
+  return lines.find(l => l.notes.length && lineStart(l) <= t + 0.05 && lineEnd(l) >= t - 0.05) ?? null;
+}
+
+/** Pitch and kind of every note of ``src`` onto ``dst`` (same number of notes; timing stays). */
+export function copyLineNotes(src, dst) {
+  if (src.notes.length === dst.notes.length) {
+    dst.notes.forEach((n, k) => { n.pitch = src.notes[k].pitch; n.kind = src.notes[k].kind; });
+    return true;
+  }
+  return false;
+}
+
+export function copyToRepeats(lines, line) {
+  let done = 0, skipped = 0;
+  for (const other of repeatsOf(lines, line)) {
+    if (other.notes.length !== line.notes.length) { skipped++; continue; }
+    other.notes.forEach((n, k) => { n.pitch = line.notes[k].pitch; n.kind = line.notes[k].kind; });
+    done++;
+  }
+  return [done, skipped];
+}
+
 /** Keep notes sorted, non-overlapping where they were, breaks between lines. */
 export function normalize(lines) {
   for (const ln of lines) ln.notes.sort((a, b) => a.start - b.start);

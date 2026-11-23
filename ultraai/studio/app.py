@@ -175,7 +175,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     def card(st: SongState) -> dict:
         d = {k: getattr(st, k) for k in ("id", "artist", "title", "language", "state", "stage", "error",
                                          "source", "created", "updated", "priority", "issues",
-                                         "lyrics_source", "video", "cover", "progress")}
+                                         "lyrics_source", "video", "cover", "progress", "lyrics_info")}
         d["open_issues"] = max(0, st.issues - len(st.dismissed))
         return d
 
@@ -311,7 +311,8 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
                 "audio": f"{base}/audio" if st.audio or song.audio else None,
                 "vocals": f"{base}/vocals" if (sd / "vocals.ogg").exists() else None,
                 "editor": f"{base}/editor" if (sd / "editor.json").exists() else None,
-                "lyrics_source": side.get("lyrics_source", st.lyrics_source)}
+                "lyrics_source": side.get("lyrics_source", st.lyrics_source),
+                "lyrics_info": side.get("lyrics") or st.lyrics_info or {}}
 
     @app.put("/api/songs/{sid}/doc")
     def put_doc(sid: str, body: DocIn):

@@ -1,5 +1,5 @@
 // Router, library board, settings, imports.
-import { api, h, toast } from "./api.js";
+import { api, h, lyricsLabel, toast } from "./api.js";
 
 const view = document.getElementById("view");
 const crumbs = document.getElementById("crumbs");
@@ -96,7 +96,7 @@ function library() {
       acts.push(h("button", { type: "button", class: "ghost small", title: "Download the music video and cover (Settings decide the quality)",
         onclick: () => getExtras(s) }, "Video"));
     acts.push(h("button", { type: "button", class: "ghost small", title: "Remove from library", "aria-label": `Remove ${s.title}`, onclick: () => remove(s) }, "✕"));
-    const sub = s.stage ? s.stage : s.lyrics_source ? `lyrics: ${s.lyrics_source}` : "";
+    const sub = s.stage ? s.stage : lyricsLabel(s.lyrics_info, s.lyrics_source);
     const p = s.progress || {};
     const busy = ["processing", "downloading"].includes(s.state);
     let bar = null, eta = null;
@@ -108,7 +108,7 @@ function library() {
         "aria-valuenow": String(Math.round(frac * 100)), "aria-label": "Progress" }, h("span", { style: `width:${(frac * 100).toFixed(1)}%` }));
       if (Number.isFinite(p.eta)) eta = `about ${fmtDur(p.eta)} left`;
     }
-    const stepsBtn = busy || p.stages?.length || s.state === "error"
+    const stepsBtn = busy || p.stages?.length || s.state === "error" || s.lyrics_info?.source
       ? h("button", { type: "button", class: "linkish", onclick: () => stepsDialog(s.id) }, busy ? "steps" : "details") : null;
     return h("div", { class: "song", role: "listitem" },
       h("div", { class: "name" },
@@ -187,8 +187,10 @@ function fillSteps(s) {
       h("span", { class: "lbl" }, x.label), h("span", { class: "dur" }, dur));
   }) : [h("li", {}, h("span", {}), h("span", { class: "muted" }, s.error || s.stage || "No details yet"), h("span", {}))]));
   const eta = document.getElementById("steps-eta");
+  const li = s.lyrics_info || {};
+  const lyr = li.source ? `${lyricsLabel(li)}${li.structure_text ? ` – ${li.structure_text}` : ""}.` : "";
   eta.textContent = ["processing", "downloading"].includes(s.state) && Number.isFinite(p.eta)
-    ? `About ${fmtDur(p.eta)} left${p.elapsed ? ` · running for ${fmtDur(p.elapsed)}` : ""}` : (s.error || "");
+    ? `About ${fmtDur(p.eta)} left${p.elapsed ? ` · running for ${fmtDur(p.elapsed)}` : ""}` : [s.error, lyr].filter(Boolean).join(" ");
 }
 function refreshSteps(songs) {
   if (!stepsFor) return;

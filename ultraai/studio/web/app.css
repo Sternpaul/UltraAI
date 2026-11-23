@@ -158,6 +158,7 @@ a.button-like:hover { border-color: var(--accent); }
 .timeline canvas { cursor: crosshair; }
 .overview { grid-column: 1; height: 42px; position: relative; background: var(--panel-2); border-top: 1px solid var(--line); cursor: pointer; }
 .side { grid-column: 2; grid-row: 2 / 5; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+.lyrinfo { padding: 8px 10px; font-size: 12.5px; border-bottom: 1px solid var(--line); }
 .tabs { display: flex; border-bottom: 1px solid var(--line); }
 .tabs button { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 8px; border-bottom: 2px solid transparent; }
 .tabs button[aria-selected="true"] { border-bottom-color: var(--accent); font-weight: 600; }

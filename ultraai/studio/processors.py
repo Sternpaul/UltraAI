@@ -105,7 +105,7 @@ class Processor:
         n = len(side.get("issues", []))
         self.lib.apply_media_headers(sid)
         self.lib.update(sid, state="needs_review", stage="", error="", issues=n, dismissed=[],
-                        lyrics_source=side.get("lyrics_source", ""), job={},
+                        lyrics_source=side.get("lyrics_source", ""), job={}, lyrics_info=side.get("lyrics") or {},
                         language=st.language or side.get("language", ""))
         return "needs_review"
 

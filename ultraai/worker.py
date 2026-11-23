@@ -287,12 +287,30 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
     side = {k: info.get(k) for k in ("issues", "words", "lines", "risk_model", "structure", "candidate",
                                       "candidates", "anchored", "asr_coverage")}
     side.update(lyrics_source=source, language=lang_name, separation=sep)
+    side["lyrics"] = lyrics_summary(cands, info, source)
     (out / "song.ultraai.json").write_text(json.dumps(side, ensure_ascii=False), encoding="utf-8")
     n_issues = sum(1 for i in info.get("issues", []))
     log.info("done in %.0f s: %d lines, %d issues, structure %s", time.time() - t0,
              len(info.get("lines", [])), n_issues, info.get("structure"))
     pr.finish("done", stage="finished", issues=n_issues, seconds=round(time.time() - t0))
     return {"state": "done", "issues": n_issues}
+
+
+STRUCTURE_TEXT = {
+    "lrc-confirmed": "speech recognition confirmed the lyrics' line order and timing",
+    "sung": "line order adjusted to what is actually sung (repeats/missing lines)",
+    "lrc": "speech recognition heard too little to check the lyrics",
+}
+
+
+def lyrics_summary(cands, info: dict, source: str) -> dict:
+    """Which lyrics were used, for the Studio: source, matched artist/title, synced, versions."""
+    k = int(info.get("candidate") or 0)
+    c = cands[k] if 0 <= k < len(cands) else cands[0]
+    return {"source": source, "artist": c.artist, "title": c.title, "duration": c.duration,
+            "synced": bool(c.lines), "lines": len(c.texts), "version": k + 1, "versions": len(cands),
+            "structure": info.get("structure"), "structure_text": STRUCTURE_TEXT.get(info.get("structure"), ""),
+            "heard": info.get("asr_coverage")}
 
 
 PEAK_HOP_S = 0.01
