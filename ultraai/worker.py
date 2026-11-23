@@ -310,7 +310,7 @@ def lyrics_summary(cands, info: dict, source: str) -> dict:
     return {"source": source, "artist": c.artist, "title": c.title, "duration": c.duration,
             "synced": bool(c.lines), "lines": len(c.texts), "version": k + 1, "versions": len(cands),
             "structure": info.get("structure"), "structure_text": STRUCTURE_TEXT.get(info.get("structure"), ""),
-            "heard": info.get("asr_coverage")}
+            "heard": info.get("asr_coverage"), "text": list(c.texts)}
 
 
 PEAK_HOP_S = 0.01

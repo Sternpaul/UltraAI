@@ -113,7 +113,7 @@ def _segments(p: PitchTrack, start: float, end: float) -> list[tuple[float, floa
     while len(runs) > 1:
         lens = [r[2] - r[1] + 1 for r in runs]
         k = int(np.argmin(lens))
-        if lens[k] >= min_frames and len(runs) <= MAX_SEGMENTS:
+        if lens[k] >= min_frames and len(runs) <= max(MAX_SEGMENTS, int((end - start) / 0.35)):
             break
         if k == 0:
             j = 1
