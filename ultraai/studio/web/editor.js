@@ -1,8 +1,8 @@
 // The song editor: playback, piano roll editing, line text, tap mode, issues, autosave.
 import { api, fmtTime, h, lyricsLabel, toast } from "./api.js";
 import {
-  MIN_NOTE, applyLineText, copyToRepeats, curveOffset, curvePitch, flatten, isCont, lineEnd, lineStart, lineText,
-  lineToEditText, normalize, repeatsOf, lineAt, copyLineNotes,
+  MIN_NOTE, applyLineText, curveOffset, curvePitch, flatten, isCont, lineEnd, lineStart, lineText,
+  lineToEditText, normalize, lineAt, copyLineNotes,
 } from "./model.js";
 import { PRESETS, applyPreset } from "./golden.js";
 import { lyricIssues } from "./lyricsdiff.js";
@@ -337,20 +337,38 @@ export async function openEditor(root, id, crumbs) {
   function goldenPreset(preset) {
     remember();
     const n = applyPreset(ed.lines, preset, ed.editor, Number(goldenShare.value));
-    changed();
+    changed(false);
     const label = PRESETS.find(p => p[0] === preset)?.[1] ?? preset;
     toast(preset === "none" ? "Golden notes removed" : `Golden notes: ${label} – ${n} syllable${n === 1 ? "" : "s"}`);
+  }
+  /** Notes of ``src`` placed at ``dst``'s own start (overwrites its notes and syllables). */
+  function overwriteLine(src, dst) {
+    const shift = lineStart(dst) - lineStart(src);
+    dst.notes = JSON.parse(JSON.stringify(src.notes)).map(n => ({ ...n, start: n.start + shift, end: n.end + shift }));
   }
   function copyRepeats() {
     const li = currentLineIndex(), line = ed.lines[li];
     if (!line) return;
-    if (!repeatsOf(ed.lines, line).length) return toast("This line is not repeated in the song");
+    const g = rep.byLine.get(li);
+    const others = (g?.lines ?? []).filter(i => i !== li).map(i => ed.lines[i]);
+    if (!others.length) return toast("This line is not repeated in the song");
     remember();
-    const [done, skipped] = copyToRepeats(ed.lines, line);
-    if (!done) { undo.pop(); updateUndo(); }
-    else changed();
-    toast(`Copied to ${done} repeat${done === 1 ? "" : "s"}` +
-      (skipped ? ` · ${skipped} skipped (different number of notes – fix their syllables first)` : ""));
+    let done = 0;
+    const differ = [];
+    for (const o of others) {
+      if (copyLineNotes(line, o)) done++;
+      else differ.push(o);
+    }
+    if (differ.length && confirm(`${differ.length} repeat${differ.length === 1 ? " has" : "s have"} a different number of notes ` +
+        `or other syllables.\n\nOverwrite ${differ.length === 1 ? "its" : "their"} notes and syllables with this line's? ` +
+        "Each keeps its own start time. (Undo with Ctrl+Z.)")) {
+      for (const o of differ) overwriteLine(line, o);
+      done += differ.length;
+      differ.length = 0;
+    }
+    if (!done) { undo.pop(); updateUndo(); return toast("Nothing copied"); }
+    changed(false);  // already applied to every copy: no linked propagation on top
+    toast(`Copied to ${done} repeat${done === 1 ? "" : "s"}` + (differ.length ? ` · ${differ.length} left as they were` : ""));
   }
   function joinLine() {
     const li = currentLineIndex(), line = ed.lines[li], nx = ed.lines[li + 1];
@@ -518,8 +536,12 @@ export async function openEditor(root, id, crumbs) {
     const dst = lineAt(ed.lines, is.start), src = lineAt(ed.lines, is.template_start);
     if (!dst || !src) return toast("Could not find the lines any more");
     remember();
-    if (!copyLineNotes(src, dst)) { undo.pop(); updateUndo(); return toast("Different number of notes – fix the syllables first (Enter)"); }
-    changed();
+    if (!copyLineNotes(src, dst)) {
+      if (!confirm("This repeat has a different number of notes.\n\nOverwrite its notes and syllables with the other repeat's? " +
+          "It keeps its own start time. (Undo with Ctrl+Z.)")) { undo.pop(); updateUndo(); return; }
+      overwriteLine(src, dst);
+    }
+    changed(false);
     dismiss(is);
     toast("Notes copied from the other repeat");
   }
