@@ -35,6 +35,7 @@ function loudness(editor, a, b) {
 export function pitchIssues(lines, editor, curveOffset = 0) {
   if (!editor?.pitch?.length) return [];
   const all = lines.flatMap(l => l.notes.filter(n => n.kind !== "F" && n.kind !== "R"));
+  const freeNotes = lines.flatMap((l, li) => l.notes.filter(n => n.kind === "F" && n.text.trim() && n.text.trim() !== "~").map(n => ({ n, li })));
   if (!all.length) return [];
   const ps = all.map(n => n.pitch).sort((a, b) => a - b);
   const lo = ps[Math.floor(0.02 * (ps.length - 1))], hi = ps[Math.floor(0.98 * (ps.length - 1))];
@@ -52,7 +53,7 @@ export function pitchIssues(lines, editor, curveOffset = 0) {
       const loud = loudness(editor, n.start, n.end);
       const quiet = lineLoud > 0 && loud !== null && loud < 0.45 * lineLoud;
       if ((jumpAll && (quiet || Math.abs(n.pitch - median(notes.map(x => x.pitch))) >= 7)) || outside) {
-        flagged.push({ kind: "outlier", li, n, why: `${outside ? "far outside the song's range" : "a big jump away from both neighbours"}${quiet ? ", and much quieter" : ""} – backing vocals or noise?` });
+        flagged.push({ kind: "outlier", li, n, why: `${outside ? "far outside the song's range" : "a big jump away from both neighbours"}${quiet ? ", and much quieter" : ""}` });
         return;
       }
       if (fr.length < 4) return;
@@ -70,6 +71,10 @@ export function pitchIssues(lines, editor, curveOffset = 0) {
       }
     });
   });
+  for (const { n, li } of freeNotes) {
+    flagged.push({ kind: "free", li, n, why: "freestyle: shown, but no pitch and no points – N makes it a normal note" });
+  }
+  flagged.sort((a, b) => a.n.start - b.n.start);
   // one issue per run of neighbouring notes of the same kind in a line
   const issues = [];
   for (const f of flagged) {
@@ -79,8 +84,9 @@ export function pitchIssues(lines, editor, curveOffset = 0) {
     }
     issues.push({ pk: f.kind, li: f.li, start: f.n.start, end: f.n.end, notes: [f.n], why: f.why, d: f.d });
   }
-  const risk = { outlier: 0.85, off: 0.6, moving: 0.55 };
-  const label = { outlier: "Unusual note", off: "Note does not match the voice", moving: "Flat note over a moving voice" };
+  const risk = { outlier: 0.85, off: 0.6, moving: 0.55, free: 0.5 };
+  const label = { outlier: "Unusual note", off: "Note does not match the voice", moving: "Flat note over a moving voice",
+    free: "Freestyle note" };
   return issues.map(i => ({
     kind: `pitch_${i.pk}`, start: i.start, end: i.end, notes: i.notes,
     risk: i.pk === "off" ? Math.min(0.85, risk.off + 0.05 * (Math.abs(i.d) - 2)) : risk[i.pk],

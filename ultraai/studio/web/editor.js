@@ -19,7 +19,7 @@ const SHORTCUTS = [
   ["↑ / ↓", "Pitch ± 1 semitone (Shift: octave)"], ["P", "Pitch of selection = what is sung"],
   ["Enter", "Edit the current line's text"], ["T", "Tap mode: re-time the current line by tapping"],
   ["S", "Split note"], ["M", "Merge note with the next"], ["Delete", "Delete selected notes"],
-  ["N", "New note at the mouse (or the playhead); type its syllable"],
+  ["N", "Selected notes: make normal · nothing selected: new note at the mouse (or playhead)"],
   ["Double-click note", "Edit that note's syllable (Tab: next note)"],
   ["G / F / R", "Golden / freestyle / rap (press again: normal)"], ["B", "Start a new line at the selected note"],
   ["C", "Copy this line's pitches and golden notes to all its repeats"],
@@ -249,6 +249,10 @@ export async function openEditor(root, id, crumbs) {
     const s = needSel(); if (!s.length) return;
     const all = s.every(({ n }) => n.kind === kind);  // pressing again switches back to normal
     remember(); for (const { n } of s) n.kind = all ? ":" : kind; changed();
+  }
+  function setNormal() {
+    const s = needSel(); if (!s.length) return;
+    remember(); for (const { n } of s) n.kind = ":"; changed();
   }
   function deleteNotes() {
     const s = needSel(); if (!s.length) return;
@@ -529,6 +533,11 @@ export async function openEditor(root, id, crumbs) {
     issueList.hidden = issueHead.hidden = which !== "issues";
     lineList.hidden = which !== "lines";
   }
+  function compareRows(c) {
+    const row = (label, toks) => h("div", { class: "cmp" }, h("span", { class: "cmp-l" }, label),
+      ...toks.flatMap(t => [h("span", { class: t.mark ? `cmp-${t.mark}` : "" }, t.text), " "]));
+    return h("div", { class: "cmpbox" }, row("Lyrics", c.lyric), row("Song", c.song));
+  }
   function riskColor(r) { return r > 0.8 ? "var(--bad)" : r > 0.6 ? "var(--warn)" : "var(--muted)"; }
   function renderIssues() {
     const open = ed.issues.filter(i => !i.dismissed).length;
@@ -540,6 +549,7 @@ export async function openEditor(root, id, crumbs) {
         h("span", { class: "risk", style: `background:${riskColor(is.risk)}`, title: `risk ${Math.round(is.risk * 100)} %` }),
         h("span", { class: "t" }, fmtTime(is.start).replace(/\.\d+$/, "")),
         h("div", { class: "txt" },
+          is.compare ? compareRows(is.compare) : null,
           h("div", {}, is.kind === "missing_lyrics" ? `Heard but not in lyrics: “${is.text}”`
             : is.kind === "lyrics_missing" ? `Missing word${/\s/.test(is.text) ? "s" : ""}: “${is.text}”`
             : is.kind === "lyrics_extra" ? `Not in the lyrics: “${is.text}”` : is.text),
@@ -702,7 +712,8 @@ export async function openEditor(root, id, crumbs) {
       "=": () => { tl.zoomAt(tl.x(now()), 1.25); render(); }, "-": () => { tl.zoomAt(tl.x(now()), 0.8); render(); },
       "[": () => setSpeed(speed - 0.25), "]": () => setSpeed(speed + 0.25), Home: () => seek(0),
     }[k] ?? {
-      s: splitNote, m: mergeNote, g: () => setKind("*"), f: () => setKind("F"), r: () => setKind("R"), n: newNote,
+      s: splitNote, m: mergeNote, g: () => setKind("*"), f: () => setKind("F"), r: () => setKind("R"),
+      n: () => (ed.selection.size ? setNormal() : newNote()),
       p: snapPitch, t: startTap, l: toggleLoop, c: copyRepeats, v: () => setSource(audio !== voc), b: () => (e.shiftKey ? joinLine() : breakLine()),
     }[k.toLowerCase()];
     if (act) { e.preventDefault(); act(); }
