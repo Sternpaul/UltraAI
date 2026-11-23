@@ -146,7 +146,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     def card(st: SongState) -> dict:
         d = {k: getattr(st, k) for k in ("id", "artist", "title", "language", "state", "stage", "error",
                                          "source", "created", "updated", "priority", "issues",
-                                         "lyrics_source")}
+                                         "lyrics_source", "video", "cover")}
         d["open_issues"] = max(0, st.issues - len(st.dismissed))
         return d
 
@@ -170,7 +170,8 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
 
         def work():
             try:
-                st = import_youtube(lib, url, progress=lambda m: holder.get("id") and lib.update(holder["id"], stage=m))
+                st = import_youtube(lib, url, settings=settings,
+                                    progress=lambda m: holder.get("id") and lib.update(holder["id"], stage=m))
                 holder["id"] = st.id
                 queue.poke()
             except Exception:  # noqa: BLE001 - state 'error' is set on the song
@@ -231,6 +232,25 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
             raise HTTPException(400, "song has no audio")
         lib.update(sid, state="queued", stage="", error="", job={})
         queue.poke()
+        return {"ok": True}
+
+    @app.post("/api/songs/{sid}/extras")
+    def extras(sid: str):
+        """Download the music video / cover for a song added from a link."""
+        from .importer import fetch_extras
+
+        st = get_state(sid)
+        if not st.source.startswith(("http://", "https://")):
+            raise HTTPException(400, "this song was not added from a link")
+
+        def work():
+            try:
+                got = fetch_extras(lib, sid, settings, progress=lambda m: lib.update(sid, stage=m))
+                lib.update(sid, stage="" if got else "nothing new to download")
+            except Exception as exc:  # noqa: BLE001
+                lib.update(sid, stage="", error=f"video/cover download failed: {exc}")
+
+        threading.Thread(target=work, daemon=True).start()
         return {"ok": True}
 
     @app.delete("/api/songs/{sid}")
@@ -325,8 +345,9 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     @app.put("/api/settings")
     def put_settings(body: dict):
         for k, v in body.items():
-            if k in Settings.__dataclass_fields__:
-                setattr(settings, k, v)
+            if k in Settings.__dataclass_fields__ and k != "extra":
+                cur = getattr(settings, k)
+                setattr(settings, k, type(cur)(v) if isinstance(cur, (bool, int, str)) else v)
         settings.save()
         return {"ok": True, "restart_needed": "library" in body}
 

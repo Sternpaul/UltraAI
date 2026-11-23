@@ -89,6 +89,9 @@ function library() {
       acts.push(h("button", { type: "button", class: "ghost small", title: "Process again", onclick: () => reprocess(s) }, "↻"));
     if (["needs_review", "reviewed", "error"].includes(s.state))
       acts.push(h("button", { type: "button", class: "ghost small", title: "Replace the lyrics", onclick: () => lyricsDialog(s.id, load) }, "Lyrics"));
+    if (/^https?:/.test(s.source || "") && (!s.video || !s.cover) && s.state !== "downloading")
+      acts.push(h("button", { type: "button", class: "ghost small", title: "Download the music video and cover (Settings decide the quality)",
+        onclick: () => getExtras(s) }, "Video"));
     acts.push(h("button", { type: "button", class: "ghost small", title: "Remove from library", "aria-label": `Remove ${s.title}`, onclick: () => remove(s) }, "✕"));
     const sub = s.stage ? s.stage : s.lyrics_source ? `lyrics: ${s.lyrics_source}` : "";
     return h("div", { class: "song", role: "listitem" },
@@ -104,6 +107,10 @@ function library() {
 
   async function reprocess(s) {
     try { await api(`/api/songs/${s.id}/process`, { method: "POST" }); toast("Queued"); load(); }
+    catch (e) { toast(e.message); }
+  }
+  async function getExtras(s) {
+    try { await api(`/api/songs/${s.id}/extras`, { method: "POST" }); toast("Downloading video / cover…"); load(); }
     catch (e) { toast(e.message); }
   }
   async function remove(s) {
@@ -174,6 +181,9 @@ const sform = document.getElementById("settings-form");
 document.getElementById("open-settings").addEventListener("click", async () => {
   const st = await api("/api/settings");
   for (const k of ["library", "ssh_host", "ssh_port", "remote_dir"]) sform.elements[k].value = st[k] || "";
+  sform.elements.youtube_audio.value = st.youtube_audio || "m4a";
+  sform.elements.youtube_video.value = st.youtube_video || "none";
+  sform.elements.youtube_cover.checked = !!st.youtube_cover;
   for (const r of sform.querySelectorAll("[name=processor]")) r.checked = r.value === st.processor;
   document.getElementById("settings-test-result").textContent = "";
   sdlg.returnValue = "";
@@ -182,7 +192,8 @@ document.getElementById("open-settings").addEventListener("click", async () => {
 function settingsBody() {
   const f = sform.elements;
   return { library: f.library.value.trim(), processor: sform.querySelector("[name=processor]:checked")?.value || "ssh",
-    ssh_host: f.ssh_host.value.trim(), ssh_port: Number(f.ssh_port.value) || 0, remote_dir: f.remote_dir.value.trim() || "UltraAI" };
+    ssh_host: f.ssh_host.value.trim(), ssh_port: Number(f.ssh_port.value) || 0, remote_dir: f.remote_dir.value.trim() || "UltraAI",
+    youtube_audio: f.youtube_audio.value, youtube_video: f.youtube_video.value, youtube_cover: f.youtube_cover.checked };
 }
 document.getElementById("settings-test").addEventListener("click", async () => {
   const out = document.getElementById("settings-test-result");
