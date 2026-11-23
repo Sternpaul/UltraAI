@@ -62,6 +62,10 @@ class Processor:
                 "title": st.title, "language": st.language}
         if self.separation:
             spec["separation"] = self.separation
+        if st.options:
+            spec["options"] = dict(st.options)
+            if st.options.get("separation"):
+                spec["separation"] = st.options["separation"]
         lyr = self.lib.studio_dir(sid) / "lyrics.txt"
         if lyr.exists() and lyr.read_text(encoding="utf-8").strip():
             spec["lyrics"] = lyr.read_text(encoding="utf-8")

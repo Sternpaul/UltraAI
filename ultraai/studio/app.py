@@ -15,7 +15,7 @@ import time
 import traceback
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -28,6 +28,33 @@ from .logs import TRACE, LEVELS, ring
 from .store import Library, SongState
 
 log = logging.getLogger("ultraai.studio")
+
+# what the processing-options window offers; "rate" = seconds of work per second of audio on the
+# 4-core test server (CPU) - a GPU is typically 10x faster for the model steps
+MODEL_CHOICES = {
+    "separation": [
+        {"key": "htdemucs", "name": "HTDemucs", "by": "Meta", "rate": 1.6, "note": "default, all accuracy numbers use it"},
+        {"key": "htdemucs_ft", "name": "HTDemucs fine-tuned", "by": "Meta", "rate": 5.0, "note": "4 models averaged"},
+        {"key": "melband", "name": "MelBand RoFormer", "by": "Kimberley Jensen", "rate": 6.0, "note": "cleanest vocals"},
+    ],
+    "pitch": [
+        {"key": "swift", "name": "SwiftF0", "rate": 0.02, "note": "default, fast"},
+        {"key": "pesto", "name": "PESTO", "rate": 0.25, "note": "trained on sung vocals"},
+        {"key": "crepe-tiny", "name": "CREPE tiny", "rate": 0.35, "note": "classic neural pitch model, small"},
+        {"key": "crepe-full", "name": "CREPE full", "rate": 5.0, "note": "most accurate CREPE, slow without a GPU"},
+    ],
+    "lead": [
+        {"key": "", "name": "Keep backing vocals", "rate": 0.0, "note": ""},
+        {"key": "kara2", "name": "UVR MDX Karaoke 2", "rate": 1.2, "note": "removes backing vocals"},
+        {"key": "melkara", "name": "MelBand RoFormer Karaoke", "rate": 6.0, "note": "removes backing vocals, cleaner"},
+    ],
+    "notes": [
+        {"key": "singer", "name": "Like the singer", "note": "every pitch change of a held syllable becomes a ~ note"},
+        {"key": "easier", "name": "Easier", "note": "only clear, held pitch changes become extra notes"},
+        {"key": "easiest", "name": "Easiest", "note": "one note per syllable"},
+    ],
+    "base_rate": 1.0,
+}
 
 WEB = Path(__file__).with_name("web")
 
@@ -116,6 +143,12 @@ class Queue:
 # ---------------------------------------------------------------- API models
 class UrlIn(BaseModel):
     url: str
+    options: dict | None = None
+
+
+class OptionsIn(BaseModel):
+    options: dict | None = None
+    remember: bool = False
 
 
 class MetaIn(BaseModel):
@@ -181,7 +214,8 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     def card(st: SongState) -> dict:
         d = {k: getattr(st, k) for k in ("id", "artist", "title", "language", "state", "stage", "error",
                                          "source", "created", "updated", "priority", "issues",
-                                         "lyrics_source", "video", "cover", "progress", "lyrics_info")}
+                                         "lyrics_source", "video", "cover", "progress", "lyrics_info",
+                                         "options")}
         d["open_issues"] = max(0, st.issues - len(st.dismissed))
         return d
 
@@ -203,9 +237,11 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
             raise HTTPException(400, "not a link")
         holder: dict = {}
 
+        opts = body.options or dict(settings.defaults)
+
         def work():
             try:
-                st = import_youtube(lib, url, settings=settings,
+                st = import_youtube(lib, url, settings=settings, options=opts,
                                     progress=lambda m: holder.get("id") and lib.update(holder["id"], stage=m))
                 holder["id"] = st.id
                 queue.poke()
@@ -216,11 +252,15 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         return {"ok": True}
 
     @app.post("/api/songs/files")
-    async def add_files(files: list[UploadFile] = File(...)):
+    async def add_files(files: list[UploadFile] = File(...), options: str = Form("")):
         import tempfile
 
         from .importer import import_file
 
+        try:
+            opts = json.loads(options) if options else dict(settings.defaults)
+        except ValueError:
+            raise HTTPException(400, "bad options") from None
         out = []
         for f in files:
             suffix = Path(f.filename or "audio").suffix.lower()
@@ -228,6 +268,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
                 while chunk := await f.read(1 << 20):
                     tmp.write(chunk)
             st = import_file(lib, Path(tmp.name), original_name=f.filename, move=True)
+            st = lib.update(st.id, options=opts)
             out.append(card(st))
         queue.poke()
         return out
@@ -279,8 +320,10 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         return {"ok": True}
 
     @app.post("/api/songs/{sid}/process")
-    def reprocess(sid: str):
+    def reprocess(sid: str, body: OptionsIn | None = None):
         st = get_state(sid)
+        if body and body.options is not None:
+            lib.update(sid, options=body.options)
         if st.state in ("processing", "downloading"):
             raise HTTPException(409, "already running")
         if not st.audio:
@@ -392,6 +435,17 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         return FileResponse(path, media_type=ctype)
 
     # ---- settings -----------------------------------------------------------------------
+    @app.get("/api/models")
+    def models():
+        """Choices for the processing-options window (names, rough cost on a 4-core CPU)."""
+        return MODEL_CHOICES
+
+    @app.post("/api/settings/defaults")
+    def save_defaults(body: OptionsIn):
+        settings.defaults = dict(body.options or {})
+        settings.save()
+        return {"ok": True}
+
     @app.get("/api/settings")
     def get_settings():
         from dataclasses import asdict

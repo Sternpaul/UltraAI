@@ -27,6 +27,7 @@ class Settings:
     youtube_cover: bool = True          # thumbnail as #COVER
     separation: str = "htdemucs"        # "htdemucs": ~5 min, measured; "melband": slower, cleaner vocals
     log_level: str = "info"             # trace | debug | info | warning | error
+    defaults: dict = field(default_factory=dict)  # processing options pre-selected for new songs
     extra: dict = field(default_factory=dict)
 
     @classmethod

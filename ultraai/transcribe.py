@@ -37,7 +37,11 @@ def _model(name: str):
     if name not in _models:
         from faster_whisper import WhisperModel
 
-        _models[name] = WhisperModel(name, device="cpu", compute_type="int8", cpu_threads=4)
+        from .pitch import device
+
+        dev = device()  # a CUDA GPU makes Whisper ~10x faster
+        _models[name] = WhisperModel(name, device=dev, compute_type="float16" if dev == "cuda" else "int8",
+                                     cpu_threads=4)
     return _models[name]
 
 

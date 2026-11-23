@@ -74,12 +74,36 @@ def lyrics_candidates(text: str, artist: str, title: str):
 
 # ------------------------------------------------------------------ progress
 STAGES = [("separate", "Separating vocals"), ("analyse", "Analysing the vocals (pitch, sounds)"),
+          ("checks", "Double-checking with other models"),
           ("lyrics", "Looking up lyrics"), ("listen", "Listening (speech recognition)"),
           ("align", "Aligning lyrics and notes")]
 # seconds of work per second of audio on the 4-core server (learned per machine, see Progress)
-PRIOR_RATE = {"separate:htdemucs": 1.6, "separate:melband": 6.0, "analyse": 0.5, "lyrics": 0.01,
-              "listen": 0.35, "align": 0.12}
+PRIOR_RATE = {"separate:htdemucs": 1.6, "separate:htdemucs_ft": 5.0, "separate:melband": 6.0,
+              "analyse": 0.5, "lyrics": 0.01, "listen": 0.35, "align": 0.12,
+              "lead:kara2": 1.2, "lead:melkara": 6.0,
+              "pitch:swift": 0.02, "pitch:pesto": 0.25, "pitch:crepe-tiny": 0.35, "pitch:crepe-full": 5.0}
+
+# per-song options from the Studio -> environment of this (one-job) process
+OPTION_ENV = {"pitch": "ULTRAAI_PITCH", "pitch_check": "ULTRAAI_PITCH_CHECK", "sep_check": "ULTRAAI_SEP_CHECK",
+              "lead": "ULTRAAI_LEAD", "notes": "ULTRAAI_NOTES"}
+
+
+def apply_options(spec: dict) -> dict:
+    opts = dict(spec.get("options") or {})
+    for k, env in OPTION_ENV.items():
+        v = opts.get(k)
+        if isinstance(v, list):
+            v = ",".join(v)
+        if v:
+            os.environ[env] = str(v)
+        else:
+            os.environ.pop(env, None)
+    return opts
 RATES_FILE = CACHE_DIR / "stage_rates.json"
+
+
+def _env_list(name: str) -> list[str]:
+    return [m.strip() for m in os.environ.get(name, "").split(",") if m.strip()]
 _current: "Progress | None" = None
 
 
@@ -106,8 +130,16 @@ class Progress:
         threading.Thread(target=self._beat, daemon=True).start()
 
     def _rate(self, key: str) -> float:
+        if key == "checks":  # extra separations + pitch models: depends on the options
+            r = sum(float(self.rates.get(f"separate:{m}", PRIOR_RATE.get(f"separate:{m}", 3.0)))
+                    for m in _env_list("ULTRAAI_SEP_CHECK") if m != self.sep)
+            return r + sum(float(PRIOR_RATE.get(f"pitch:{m}", 0.5)) for m in _env_list("ULTRAAI_PITCH_CHECK"))
         k = f"{key}:{self.sep}" if key == "separate" else key
-        return float(self.rates.get(k, PRIOR_RATE.get(k, 0.5)))
+        r = float(self.rates.get(k, PRIOR_RATE.get(k, 0.5)))
+        if key == "analyse":
+            r += PRIOR_RATE.get(f"lead:{os.environ.get('ULTRAAI_LEAD')}", 0.0)
+            r += PRIOR_RATE.get(f"pitch:{os.environ.get('ULTRAAI_PITCH', 'swift')}", 0.0)
+        return r
 
     def start(self, key: str) -> None:
         with self.lock:
@@ -129,7 +161,7 @@ class Progress:
             return
         took = time.time() - self.t_cur
         self.cur.update(state="done", seconds=round(took, 1))
-        if took > max(2.0, 0.25 * self.cur["expected"]):  # real work (not cached): learn this machine's speed
+        if self.cur["key"] != "checks" and took > max(2.0, 0.25 * self.cur["expected"]):  # real work: learn speed
             k = f"{self.cur['key']}:{self.sep}" if self.cur["key"] == "separate" else self.cur["key"]
             self.rates[k] = round(0.7 * self._rate(self.cur["key"]) + 0.3 * took / self.duration, 4)
             try:
@@ -239,11 +271,27 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
     duration = audio_duration(audio) or 240.0
     log.info("audio %s, %.0f s", audio.name, duration)
     global _current
+    opts = apply_options(spec)
+    log.info("options: %s", opts or "defaults")
     pr = _current = Progress(job, duration, sep)
     pr.start("separate")
     separate(audio, sep, need_instrumental=False)
     pr.start("analyse")
     a = analyse(audio, sep)
+    pitch_checks = [m for m in _env_list("ULTRAAI_PITCH_CHECK") if m != os.environ.get("ULTRAAI_PITCH", "swift")]
+    sep_checks = [m for m in _env_list("ULTRAAI_SEP_CHECK") if m != sep]
+    if pitch_checks or sep_checks:
+        from .generate import pitch_track
+        from .audio import load_mono
+
+        pr.start("checks")  # compute (and cache) the second opinions; compared during alignment
+        for m in pitch_checks:
+            pitch_track(a.vocals, a.wave, m)
+        for m in sep_checks:
+            v2, _ = separate(audio, m, need_instrumental=False)
+            pitch_track(v2, load_mono(v2, 16000), os.environ.get("ULTRAAI_PITCH", "swift"))
+    else:
+        pr.skip("checks", "not chosen")
     # lyrics: user-supplied, else LRCLIB
     if spec.get("lyrics"):
         pr.skip("lyrics", "your lyrics")

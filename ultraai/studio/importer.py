@@ -156,9 +156,11 @@ def _hook(progress, what: str):
     return hook
 
 
-def import_youtube(lib: Library, url: str, progress=None, settings=None) -> SongState:
+def import_youtube(lib: Library, url: str, progress=None, settings=None, options: dict | None = None) -> SongState:
     """Create the song right away (state 'downloading'), then download audio, video, cover."""
     st = lib.create("", url, source=url, state="downloading")
+    if options:
+        lib.update(st.id, options=options)
     try:
         info = youtube_info(url)
         artist = info.get("artist") or info.get("creator") or ""
