@@ -1,8 +1,8 @@
 // The song editor: playback, piano roll editing, line text, tap mode, issues, autosave.
-import { api, fmtTime, h, toast } from "./api.js";
+import { api, fmtTime, h, lyricsLabel, toast } from "./api.js";
 import {
-  MIN_NOTE, applyLineText, curveOffset, curvePitch, flatten, isCont, lineEnd, lineStart, lineText,
-  lineToEditText, normalize,
+  MIN_NOTE, applyLineText, copyToRepeats, curveOffset, curvePitch, flatten, isCont, lineEnd, lineStart, lineText,
+  lineToEditText, normalize, repeatsOf, lineAt, copyLineNotes,
 } from "./model.js";
 import { drawPreview } from "./preview.js";
 import { Timeline, drawOverview } from "./timeline.js";
@@ -17,6 +17,7 @@ const SHORTCUTS = [
   ["Enter", "Edit the current line's text"], ["T", "Tap mode: re-time the current line by tapping"],
   ["S", "Split note"], ["M", "Merge note with the next"], ["Delete", "Delete selected notes"],
   ["G / F / R / N", "Golden / freestyle / rap / normal note"], ["B", "Start a new line at the selected note"],
+  ["C", "Copy this line's pitches and golden notes to all its repeats"],
   ["Shift+B", "Join the line with the next"], ["L", "Loop selection / current issue"],
   ["V", "Switch mix / vocals only"], ["[ / ]", "Slower / faster"], ["Tab / Shift+Tab", "Next / previous issue"],
   ["Ctrl+wheel, + / −", "Zoom"], ["Wheel", "Scroll"], ["Ctrl+Z / Ctrl+Y", "Undo / redo"], ["Ctrl+S", "Save now"],
@@ -104,6 +105,7 @@ export async function openEditor(root, id, crumbs) {
     h("div", { class: "group" },
       btn("★", "Golden note (G)", () => setKind("*")), btn("F", "Freestyle (F)", () => setKind("F")),
       btn("R", "Rap (R)", () => setKind("R")), btn("N", "Normal (N)", () => setKind(":")),
+      btn("Copy to repeats", "Give every repeat of this line the same pitches and golden notes (C)", () => copyRepeats()),
       btn("New line", "Start a new line at the selected note (B)", () => breakLine()),
       btn("Join", "Join the line with the next (Shift+B)", () => joinLine())),
     h("div", { class: "group" }, undoBtn, redoBtn, voiceSel),
@@ -123,7 +125,11 @@ export async function openEditor(root, id, crumbs) {
   const issueHead = h("div", { class: "panel-head" });
   const issueList = h("div", { class: "panel", role: "tabpanel" });
   const lineList = h("div", { class: "panel", role: "tabpanel", hidden: true });
-  const side = h("aside", { class: "side" }, h("div", { class: "tabs", role: "tablist" }, issueTab, lineTab), issueHead, issueList, lineList, hint);
+  const li = data.lyrics_info || {};
+  const lyrInfo = h("div", { class: "lyrinfo", title: li.structure_text || "" },
+    lyricsLabel(li, data.lyrics_source) || "lyrics: unknown",
+    li.structure_text ? h("div", { class: "muted" }, li.structure_text) : null);
+  const side = h("aside", { class: "side" }, lyrInfo, h("div", { class: "tabs", role: "tablist" }, issueTab, lineTab), issueHead, issueList, lineList, hint);
 
   const shell = h("div", { class: "editor" }, toolbar, preview, timelineEl, overview, side);
   root.append(shell);
@@ -256,6 +262,17 @@ export async function openEditor(root, id, crumbs) {
     line.break = prevEnd + Math.min(0.3, (rest[0].start - prevEnd) / 2);
     changed();
   }
+  function copyRepeats() {
+    const li = currentLineIndex(), line = ed.lines[li];
+    if (!line) return;
+    if (!repeatsOf(ed.lines, line).length) return toast("This line is not repeated in the song");
+    remember();
+    const [done, skipped] = copyToRepeats(ed.lines, line);
+    if (!done) { undo.pop(); updateUndo(); }
+    else changed();
+    toast(`Copied to ${done} repeat${done === 1 ? "" : "s"}` +
+      (skipped ? ` · ${skipped} skipped (different number of notes – fix their syllables first)` : ""));
+  }
   function joinLine() {
     const li = currentLineIndex(), line = ed.lines[li], nx = ed.lines[li + 1];
     if (!nx) return toast("No next line");
@@ -365,6 +382,15 @@ export async function openEditor(root, id, crumbs) {
     if (k < 0) k = dir > 0 ? open.findIndex(i => i.start > now()) - 1 : open.length;
     gotoIssue(open[(k + dir + open.length) % open.length]);
   }
+  function makeSame(is) {
+    const dst = lineAt(ed.lines, is.start), src = lineAt(ed.lines, is.template_start);
+    if (!dst || !src) return toast("Could not find the lines any more");
+    remember();
+    if (!copyLineNotes(src, dst)) { undo.pop(); updateUndo(); return toast("Different number of notes – fix the syllables first (Enter)"); }
+    changed();
+    dismiss(is);
+    toast("Notes copied from the other repeat");
+  }
   async function dismiss(is) {
     is.dismissed = true;
     try { await api(`/api/songs/${id}/issues/dismiss`, { method: "POST", json: { key: is.key } }); }
@@ -425,6 +451,8 @@ export async function openEditor(root, id, crumbs) {
         h("div", { class: "txt" },
           h("div", {}, is.kind === "missing_lyrics" ? `Heard but not in lyrics: “${is.text}”` : is.text),
           h("div", { class: "why" }, (is.reasons || []).join(" · "))),
+        is.dismissed || is.kind !== "repeat" ? null : h("button", { type: "button", class: "small primary",
+          title: "Use the notes of the other repeats here", onclick: e => { e.stopPropagation(); makeSame(is); } }, "Make same"),
         is.dismissed ? null : h("button", { type: "button", class: "small ghost", title: "This is fine",
           onclick: e => { e.stopPropagation(); dismiss(is); } }, "✓ OK")))
       : [h("div", { class: "empty" }, "No issues found. Play it through once to be sure.")]));
@@ -578,7 +606,7 @@ export async function openEditor(root, id, crumbs) {
       "[": () => setSpeed(speed - 0.25), "]": () => setSpeed(speed + 0.25), Home: () => seek(0),
     }[k] ?? {
       s: splitNote, m: mergeNote, g: () => setKind("*"), f: () => setKind("F"), r: () => setKind("R"), n: () => setKind(":"),
-      p: snapPitch, t: startTap, l: toggleLoop, v: () => setSource(audio !== voc), b: () => (e.shiftKey ? joinLine() : breakLine()),
+      p: snapPitch, t: startTap, l: toggleLoop, c: copyRepeats, v: () => setSource(audio !== voc), b: () => (e.shiftKey ? joinLine() : breakLine()),
     }[k.toLowerCase()];
     if (act) { e.preventDefault(); act(); }
   };

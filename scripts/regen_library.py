@@ -36,6 +36,8 @@ def main(tag, gens="m2,m3", root="library", out="out/library"):
              and (work_dir(c.audio) / f"vocals.{SEP}.emissions.pt").exists()
              and any(work_dir(c.audio).glob("*.asr-*.json"))
              and c.name not in done and (not only or only.lower() in c.name.lower())]
+    if os.environ.get("ULTRAAI_LIMIT"):
+        cases = cases[: int(os.environ["ULTRAAI_LIMIT"]) - len(done)]
     print(f"{tag}: {len(cases)} cached songs to regenerate", flush=True)
     for case in cases:
         t0 = time.time()

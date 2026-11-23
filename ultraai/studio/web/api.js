@@ -47,6 +47,17 @@ export function h(tag, props = {}, ...children) {
   return el;
 }
 
+/** "LRCLIB · Kingfishr – The Blade · synced · version 1 of 3" */
+export function lyricsLabel(li, fallback = "") {
+  if (!li || !li.source) return fallback ? `lyrics: ${fallback}` : "";
+  if (li.source === "user") return "lyrics: yours";
+  const parts = [`lyrics: ${li.source}`];
+  if (li.artist || li.title) parts.push(`${li.artist} – ${li.title}`);
+  parts.push(li.synced ? "synced" : "not synced");
+  if (li.versions > 1) parts.push(`version ${li.version} of ${li.versions}`);
+  return parts.join(" · ");
+}
+
 export function fmtTime(t) {
   if (!Number.isFinite(t)) return "–";
   const m = Math.floor(t / 60), s = t - 60 * m;

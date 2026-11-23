@@ -74,7 +74,7 @@ def _pitch(p: PitchTrack, start: float, end: float, fallback: int) -> int:
 MELISMA = __import__("os").environ.get("ULTRAAI_MELISMA", "1") == "1"
 MIN_SEG_S = float(__import__("os").environ.get("ULTRAAI_MINSEG", 0.15))
 MIN_MELISMA_SYL_S = 0.3
-MAX_SEGMENTS = 4
+MAX_SEGMENTS = int(__import__("os").environ.get("ULTRAAI_MAXSEG", 6))
 
 
 def _segments(p: PitchTrack, start: float, end: float) -> list[tuple[float, float, int]]:
@@ -108,11 +108,12 @@ def _segments(p: PitchTrack, start: float, end: float) -> list[tuple[float, floa
         else:
             runs.append([v, i, i])
     min_frames = max(1, int(MIN_SEG_S / p.frame))
-    # absorb short runs into the longer neighbour until all are long enough
+    # absorb short runs into the longer neighbour until all are long enough and, for long
+    # wobbly notes ("whoooah"), until at most MAX_SEGMENTS remain (the main steps survive)
     while len(runs) > 1:
         lens = [r[2] - r[1] + 1 for r in runs]
         k = int(np.argmin(lens))
-        if lens[k] >= min_frames:
+        if lens[k] >= min_frames and len(runs) <= MAX_SEGMENTS:
             break
         if k == 0:
             j = 1
@@ -130,8 +131,6 @@ def _segments(p: PitchTrack, start: float, end: float) -> list[tuple[float, floa
             else:
                 merged.append(r)
         runs = merged
-    if len(runs) > MAX_SEGMENTS:
-        return []
     out = []
     for k, (pitch, i0, i1) in enumerate(runs):
         t0 = start if k == 0 else float(p.times[a + i0])
@@ -215,14 +214,156 @@ def low_confidence_lines(syl: list[Syllable]) -> int:
     return sum(r["review"] for r in line_report(syl))
 
 
+def _line_groups(syl: list[Syllable]) -> list[list[list[Syllable]]]:
+    """Screen lines with the same words and syllable count (a repeated chorus line, "whoa"s)."""
+    import re as _re
+
+    by_line: dict[int, list[Syllable]] = {}
+    for s in syl:
+        by_line.setdefault(s.line, []).append(s)
+    groups: dict[tuple, list[list[Syllable]]] = {}
+    for ss in by_line.values():
+        words = _re.sub(r"[^\w\s]", "", "".join(x.text for x in ss).lower()).split()
+        if words:
+            groups.setdefault((" ".join(words), len(ss)), []).append(ss)
+    return [g for g in groups.values() if len(g) > 1]
+
+
+def _fold(p: float, ref: float) -> float:
+    """``p`` moved by whole octaves next to ``ref`` (pitch trackers jump octaves)."""
+    while p - ref > 6:
+        p -= 12
+    while ref - p > 6:
+        p += 12
+    return p
+
+
+_E = __import__("os").environ
+HARMONIZE_AGREE = float(_E.get("ULTRAAI_HARM_AGREE", 0.6))  # share of syllables agreeing with the group
+HARMONIZE_TOL = int(_E.get("ULTRAAI_HARM_TOL", 2))          # semitones
+HARMONIZE_MIN_SYL = int(_E.get("ULTRAAI_HARM_MIN", 1))      # shorter lines ("oh") are not grouped
+HARMONIZE_MELISMA = _E.get("ULTRAAI_HARM_MELISMA", "0") == "1"  # also unify melisma shapes
+HARMONIZE_MODE = _E.get("ULTRAAI_HARM_MODE", "pool")  # pool: most common sung note over all repeats
+
+
+def _pooled_pitch(p: PitchTrack, spans: list[tuple[float, float]]) -> int | None:
+    """Most common semitone over the voiced frames of all spans (octave-folded together)."""
+    frames = []
+    vm = p.voiced()
+    for a_, b_ in spans:
+        a, b = p.index(a_), max(p.index(b_), p.index(a_) + 1)
+        frames.append(p.midi[a:b][vm[a:b]])
+    allf = np.concatenate(frames) if frames else np.array([])
+    if len(allf) < 3:
+        return None
+    ref = float(np.median(allf))
+    folded = allf - 12 * np.round((allf - ref) / 12)
+    vals, counts = np.unique(np.round(folded).astype(int), return_counts=True)
+    return int(vals[np.argmax(counts)])
+
+
+def harmonize_repeats(syl: list[Syllable], proposals: list | None = None, pitch: PitchTrack | None = None) -> int:
+    """Give every repetition of a line the same notes.
+
+    Per syllable position the consensus pitch (median over the repetitions, octave-folded) is
+    used; melismas copy the shape of the best-voiced repetition, scaled to each syllable's
+    own timing.  A repetition that clearly differs (key change, variation) is left alone and,
+    if ``proposals`` is given, added to it as (that line, a harmonized line) for review.
+    Returns the number of lines changed."""
+    changed = 0
+    for group in _line_groups(syl):
+        n = len(group[0])
+        if n < HARMONIZE_MIN_SYL:
+            continue
+        consensus = []
+        for k in range(n):
+            ps = [occ[k].pitch for occ in group if occ[k].voiced >= 0.3] or [occ[k].pitch for occ in group]
+            ref = float(np.median(ps))
+            c = int(round(float(np.median([_fold(p_, ref) for p_ in ps]))))
+            if pitch is not None and HARMONIZE_MODE == "pool":
+                c = _pooled_pitch(pitch, [(occ[k].start, occ[k].end) for occ in group]) or c
+            consensus.append(c)
+        best = max(group, key=lambda occ: float(np.mean([x.voiced for x in occ])))
+        odd = []
+        for occ in group:
+            agree = sum(abs(_fold(occ[k].pitch, consensus[k]) - consensus[k]) <= HARMONIZE_TOL for k in range(n))
+            if agree < HARMONIZE_AGREE * n:
+                odd.append(occ)
+                continue
+            for k, x in enumerate(occ):
+                tpl = best[k]
+                if not HARMONIZE_MELISMA and any(o[k].segments for o in group):
+                    continue  # leave melismas as detected
+                if tpl.segments and tpl.end > tpl.start:
+                    scale = (x.end - x.start) / (tpl.end - tpl.start)
+                    x.segments = [(x.start + (a - tpl.start) * scale, x.start + (b - tpl.start) * scale, m)
+                                  for a, b, m in tpl.segments]
+                    x.pitch = tpl.segments[0][2]
+                else:
+                    x.segments = None
+                    x.pitch = consensus[k]
+            changed += 1
+        if proposals is not None and len(odd) < len(group):
+            tpl = next(occ for occ in group if not any(occ is o for o in odd))
+            proposals.extend((occ, tpl) for occ in odd)
+    return changed
+
+
+GOLDEN_MIN_JUMP = 4       # semitones to a neighbour
+GOLDEN_MAX_GAP_S = 0.6    # neighbours further apart are another phrase
+
+
+def _difficulty(ss: list[Syllable]) -> list[float]:
+    """How hard each syllable of a line is to hit: the pitch jump into/out of it (octave
+    jumps count as tracker errors) plus how far it sits from the line's usual range."""
+    med = float(np.median([x.pitch for x in ss]))
+    out = []
+    for k, x in enumerate(ss):
+        jumps = [0.0]
+        for j in (k - 1, k + 1):
+            if 0 <= j < len(ss) and (ss[j].start - x.end if j > k else x.start - ss[j].end) <= GOLDEN_MAX_GAP_S:
+                d = abs(x.pitch - ss[j].pitch)
+                if 11 <= d <= 13:
+                    d = abs(d - 12)
+                jumps.append(float(d))
+        jump = max(jumps)
+        out.append(jump + 0.5 * abs(_fold(x.pitch, med) - med) if jump >= GOLDEN_MIN_JUMP else 0.0)
+    return out
+
+
 def mark_note_kinds(syl: list[Syllable]) -> None:
-    """Freestyle for unpitched (shouted/spoken) syllables; golden for long steady chorus notes."""
-    from collections import Counter
+    """Freestyle for unpitched (shouted/spoken) syllables; golden for the hard ones: notes
+    reached by a big pitch jump (outliers of their line), held long enough to score, and
+    the same notes in every repetition of the line."""
+    import os
 
     for s in syl:
         if s.voiced < FREESTYLE_MAX_VOICED and s.end - s.start >= 0.08:
             s.kind = "F"
-    # lines repeated in the song (chorus) are where golden notes usually go
+    if os.environ.get("ULTRAAI_GOLDEN", "jumps") == "legacy":
+        return _golden_legacy(syl)
+    by_line: dict[int, list[Syllable]] = {}
+    for s in syl:
+        by_line.setdefault(s.line, []).append(s)
+    scored = []
+    for ss in by_line.values():
+        for x, d in zip(ss, _difficulty(ss)):
+            if d > 0 and x.kind == ":" and x.end - x.start >= GOLDEN_MIN_S and x.voiced > 0.6:
+                scored.append((d, x))
+    scored.sort(key=lambda t: -t[0])
+    gold = {id(x) for _, x in scored[: int(GOLDEN_SHARE * len(syl))]}
+    for group in _line_groups(syl):  # same golden notes in every repetition
+        for k in range(len(group[0])):
+            if any(id(occ[k]) in gold for occ in group):
+                gold.update(id(occ[k]) for occ in group if occ[k].kind == ":")
+    for s in syl:
+        if id(s) in gold:
+            s.kind = "*"
+
+
+def _golden_legacy(syl: list[Syllable]) -> None:
+    from collections import Counter
+
     text_of: dict[int, str] = {}
     for s in syl:
         text_of[s.line] = text_of.get(s.line, "") + s.text
@@ -592,6 +733,18 @@ def _merge_lrc_times(lines, asr_times: list[float], lrc_times: list[float]) -> l
     return out
 
 
+def _repeat_issues(proposals) -> list[dict]:
+    """Repeats sung (or detected) differently from the others: ask the user."""
+    out = []
+    for occ, tpl in proposals:
+        m, s_ = divmod(int(tpl[0].start), 60)
+        out.append({"kind": "repeat", "line": occ[0].line, "start": round(occ[0].start, 3),
+                    "end": round(occ[-1].end, 3), "risk": 0.55,
+                    "text": "".join(x.text for x in occ).strip(), "template_start": round(tpl[0].start, 3),
+                    "reasons": [f"same words as at {m}:{s_:02d}, but different notes – make them the same?"]})
+    return out
+
+
 def _add_issues(info, syl, free, expected, asr_words, line_flags, lyrics, pitch=None) -> None:
     """Per-word risk + review issues for the editor (see issues.py)."""
     from . import issues as iss
@@ -664,10 +817,14 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
     syl = build_syllables(lyrics, words, a.pitch)
     syl, info["dropped_vocable_lines"] = drop_unsung_vocables(syl)
     split_lines(syl)
+    proposals: list = []
+    if os.environ.get("ULTRAAI_HARMONIZE", "1") == "1":
+        info["harmonized_lines"] = harmonize_repeats(syl, proposals, a.pitch)
     mark_note_kinds(syl)
     info["lines"] = line_report(syl)
     info["low_confidence_lines"] = sum(r["review"] for r in info["lines"])
     _add_issues(info, syl, free, expected, asr_words, line_flags, lyrics, a.pitch)
+    info["issues"] = sorted(info["issues"] + _repeat_issues(proposals), key=lambda i: -i["risk"])
     grid = None
     if os.environ.get("ULTRAAI_TEMPO", "1") == "1":
         from .audio import work_dir
