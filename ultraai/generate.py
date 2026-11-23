@@ -615,7 +615,12 @@ def generate_sung(audio: Path, candidates: list, language: str, meta: dict[str, 
     from .transcribe import transcribe
 
     a = analyse(audio, separation)
-    asr = transcribe(a.vocals.with_name(a.vocals.stem + ".mono16000.wav"), language, wave=a.wave)
+    asr_sep = os.environ.get("ULTRAAI_ASR_SEP")  # benchmarks: one transcript for every separation
+    asr_vocals = a.vocals.with_name(f"vocals.{asr_sep}.mono16000.wav") if asr_sep else None
+    if asr_vocals is not None and asr_vocals.exists():
+        asr = transcribe(asr_vocals, language)
+    else:
+        asr = transcribe(a.vocals.with_name(a.vocals.stem + ".mono16000.wav"), language, wave=a.wave)
     scored = []
     for k, cand in enumerate(candidates):
         texts, times = lrc_lines(cand)

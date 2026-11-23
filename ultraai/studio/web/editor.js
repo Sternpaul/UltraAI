@@ -7,6 +7,7 @@ import {
 import { PRESETS, applyPreset } from "./golden.js";
 import { lyricIssues } from "./lyricsdiff.js";
 import { pitchIssues } from "./pitchcheck.js";
+import { findRepeats, propagate, spanOf } from "./repeats.js";
 import { drawPreview } from "./preview.js";
 import { Timeline, drawOverview } from "./timeline.js";
 
@@ -23,6 +24,7 @@ const SHORTCUTS = [
   ["Double-click note", "Edit that note's syllable (Tab: next note)"],
   ["G / F / R", "Golden / freestyle / rap (press again: normal)"], ["B", "Start a new line at the selected note"],
   ["C", "Copy this line's pitches and golden notes to all its repeats"],
+  ["K", "Link repeats on/off: edits to one repeat are applied to all of them"],
   ["Shift+B", "Join the line with the next"], ["L", "Loop selection / current issue"],
   ["V", "Switch mix / vocals only"], ["[ / ]", "Slower / faster"], ["Tab / Shift+Tab", "Next / previous issue"],
   ["Ctrl+wheel, + / −", "Zoom"], ["Wheel", "Scroll"], ["Ctrl+Z / Ctrl+Y", "Undo / redo"], ["Ctrl+S", "Save now"],
@@ -105,6 +107,9 @@ export async function openEditor(root, id, crumbs) {
   try { showPreview = localStorage.getItem("ultraai.preview") !== "off"; } catch { /* no storage */ }
   const previewBtn = btn("Preview", "Show / hide the game preview on top", () => setPreview(!showPreview), { "aria-pressed": String(showPreview) });
   const loopBtn = btn("Loop", "Loop the selection / current issue (L)", () => toggleLoop(), { "aria-pressed": "false" });
+  let linkOn = false;
+  try { linkOn = localStorage.getItem("ultraai.link") === "on"; } catch { /* no storage */ }
+  const linkBtn = btn("🔗 Link repeats", "Edit all repeats of a line or chorus together (K)", () => setLink(!linkOn), { "aria-pressed": String(linkOn) });
   const undoBtn = btn("↶", "Undo (Ctrl+Z)", () => doUndo(), { disabled: true });
   const redoBtn = btn("↷", "Redo (Ctrl+Y)", () => doRedo(), { disabled: true });
   const saveEl = h("span", { class: "savestate", role: "status" }, "Saved");
@@ -120,7 +125,7 @@ export async function openEditor(root, id, crumbs) {
     ...doc.voices.map((v, k) => h("option", { value: String(k) }, `Singer ${v.voice}`))) : null;
 
   const toolbar = h("div", { class: "toolbar" },
-    h("div", { class: "group" }, playBtn, timeEl, speedSel, srcBtn, loopBtn, previewBtn),
+    h("div", { class: "group" }, playBtn, timeEl, speedSel, srcBtn, loopBtn, previewBtn, linkBtn),
     h("div", { class: "group" },
       btn("Text", "Edit the line's text and syllables (Enter / double-click)", () => editLine()),
       btn("Tap", "Re-time the current line by tapping along (T)", () => startTap()),
@@ -158,6 +163,8 @@ export async function openEditor(root, id, crumbs) {
 
   const issueTab = h("button", { type: "button", role: "tab", "aria-selected": "true", onclick: () => showTab("issues") }, "Issues");
   const lineTab = h("button", { type: "button", role: "tab", "aria-selected": "false", onclick: () => showTab("lines") }, "Lines");
+  const repTab = h("button", { type: "button", role: "tab", "aria-selected": "false", onclick: () => showTab("repeats") }, "Repeats");
+  const repList = h("div", { class: "panel", role: "tabpanel", hidden: true });
   const issueHead = h("div", { class: "panel-head" });
   const issueList = h("div", { class: "panel", role: "tabpanel" });
   const lineList = h("div", { class: "panel", role: "tabpanel", hidden: true });
@@ -165,7 +172,7 @@ export async function openEditor(root, id, crumbs) {
   const lyrInfo = h("div", { class: "lyrinfo", title: li.structure_text || "" },
     lyricsLabel(li, data.lyrics_source) || "lyrics: unknown",
     li.structure_text ? h("div", { class: "muted" }, li.structure_text) : null);
-  const side = h("aside", { class: "side" }, lyrInfo, h("div", { class: "tabs", role: "tablist" }, issueTab, lineTab), issueHead, issueList, lineList, hint);
+  const side = h("aside", { class: "side" }, lyrInfo, h("div", { class: "tabs", role: "tablist" }, issueTab, lineTab, repTab), issueHead, issueList, lineList, repList, hint);
 
   const shell = h("div", { class: "editor" }, toolbar, preview, timelineEl, overview, side);
   root.append(shell);
@@ -201,7 +208,30 @@ export async function openEditor(root, id, crumbs) {
     ed.selection.clear();
     for (const [li, ni] of idx) { const n = ed.lines[li]?.notes[ni]; if (n) ed.selection.add(n); }
   }
+  let rep = { groups: [], byLine: new Map(), sections: [] };
+  function refreshRepeats() { rep = findRepeats(ed.lines); renderRepeats(); updateLinkSpans(); }
+  function setLink(on) {
+    linkOn = on;
+    linkBtn.setAttribute("aria-pressed", String(on));
+    try { localStorage.setItem("ultraai.link", on ? "on" : "off"); } catch { /* no storage */ }
+    updateLinkSpans();
+    toast(on ? `Repeats linked – ${rep.groups.length} repeated line${rep.groups.length === 1 ? "" : "s"}; edits apply to all copies` : "Repeats unlinked");
+    render();
+  }
+  function updateLinkSpans() {  // the other copies of the current line, highlighted while linked
+    ed.linkSpans = [];
+    if (!linkOn) return;
+    const g = rep.byLine.get(currentLineIndex());
+    if (g) ed.linkSpans = g.lines.map(i => spanOf(ed.lines, i));
+  }
   function changed(record = true) {
+    if (record && linkOn && undo.length) {
+      const prev = undo[undo.length - 1][ed.voice]?.lines;
+      if (prev) {
+        const r = propagate(prev, ed.lines, rep);
+        if (r.skipped) toast(`Applied to ${r.applied} repeat${r.applied === 1 ? "" : "s"}; ${r.skipped} similar line${r.skipped === 1 ? "" : "s"} skipped (different syllables)`);
+      }
+    }
     normalize(ed.lines);
     refreshDerived();
     refreshLyricIssues();
@@ -210,8 +240,7 @@ export async function openEditor(root, id, crumbs) {
     setSave("unsaved");
     clearTimeout(saveTimer);
     saveTimer = setTimeout(save, 1200);
-    renderLines(); render();
-    void record;
+    renderLines(); refreshRepeats(); render();
   }
   function selected() { return flatten(ed.lines).filter(x => ed.selection.has(x.n)); }
   function needSel() { const s = selected(); if (!s.length) toast("Select a note first (click it)"); return s; }
@@ -542,6 +571,32 @@ export async function openEditor(root, id, crumbs) {
     lineTab.setAttribute("aria-selected", String(which === "lines"));
     issueList.hidden = issueHead.hidden = which !== "issues";
     lineList.hidden = which !== "lines";
+    repTab.setAttribute("aria-selected", String(which === "repeats"));
+    repList.hidden = which !== "repeats";
+  }
+  function renderRepeats() {
+    const jump = (i, len) => {
+      ed.selection.clear();
+      for (let k = i; k < i + len; k++) ed.lines[k]?.notes.forEach(n => ed.selection.add(n));
+      const [a] = spanOf(ed.lines, i, len);
+      tl.ensureVisible(a); seek(a - 0.3); updateLinkSpans();
+    };
+    const chip = (i, len) => h("button", { type: "button", class: "small ghost", onclick: e => { e.stopPropagation(); jump(i, len); } },
+      fmtTime(spanOf(ed.lines, i)[0]).replace(/\.\d+$/, ""));
+    const items = [];
+    for (const s of rep.sections) {
+      items.push(h("div", { class: "item", onclick: () => jump(s.starts[0], s.len) },
+        h("div", { class: "txt" }, h("div", {}, `${s.len} lines ×${s.starts.length}: “${s.text}” …`),
+          h("div", { class: "why" }, ...s.starts.map(i => chip(i, s.len))))));
+    }
+    for (const g of rep.groups) {
+      items.push(h("div", { class: "item", onclick: () => jump(g.lines[0], 1) },
+        h("div", { class: "txt" }, h("div", {}, `×${g.lines.length}: “${g.text}”${g.exact ? "" : " (similar)"}`),
+          h("div", { class: "why" }, ...g.lines.map(i => chip(i, 1))))));
+    }
+    repList.replaceChildren(h("div", { class: "panel-head" },
+      linkOn ? "Linked: edits to one copy go to all copies." : "Turn on 🔗 Link repeats to edit all copies at once."),
+      ...(items.length ? items : [h("div", { class: "empty" }, "No repeated lines in this song.")]));
   }
   function compareRows(c) {
     const row = (label, toks) => h("div", { class: "cmp" }, h("span", { class: "cmp-l" }, label),
@@ -724,7 +779,7 @@ export async function openEditor(root, id, crumbs) {
     }[k] ?? {
       s: splitNote, m: mergeNote, g: () => setKind("*"), f: () => setKind("F"), r: () => setKind("R"),
       n: () => (ed.selection.size ? setNormal() : newNote()),
-      p: snapPitch, t: startTap, l: toggleLoop, c: copyRepeats, v: () => setSource(audio !== voc), b: () => (e.shiftKey ? joinLine() : breakLine()),
+      p: snapPitch, t: startTap, l: toggleLoop, c: copyRepeats, k: () => setLink(!linkOn), v: () => setSource(audio !== voc), b: () => (e.shiftKey ? joinLine() : breakLine()),
     }[k.toLowerCase()];
     if (act) { e.preventDefault(); act(); }
   };
@@ -767,6 +822,7 @@ export async function openEditor(root, id, crumbs) {
     if (showPreview) drawPreview(pvCanvas, ed.lines, t);
     drawOverview(ovCanvas, ed, tl, t);
     markCurrentLine();
+    if (linkOn) updateLinkSpans();
   }
   for (const a of [mix, voc]) if (a) for (const ev of ["play", "pause", "seeked", "loadedmetadata"]) a.addEventListener(ev, render);
   const ro = new ResizeObserver(() => { tl.resize(); render(); });
@@ -777,7 +833,7 @@ export async function openEditor(root, id, crumbs) {
 
   // initial view: first issue, else start
   refreshLyricIssues();
-  renderIssues(); renderLines(); updateUndo();
+  renderIssues(); renderLines(); refreshRepeats(); updateUndo();
   tl.pps = 140;
   const first = ed.issues.find(i => !i.dismissed);
   tl.t0 = Math.max(-1, (ed.lines[0] ? lineStart(ed.lines[0]) : 0) - 1);
