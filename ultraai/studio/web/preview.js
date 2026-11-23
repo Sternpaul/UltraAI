@@ -53,19 +53,25 @@ export function drawPreview(canvas, lines, now) {
 function lyric(g, line, now, cx, y, size, active) {
   g.font = `600 ${size}px system-ui, "Segoe UI", sans-serif`;
   g.textBaseline = "middle";
-  const parts = line.notes.map(n => ({ n, text: isCont(n) ? shown(n) : n.text }));
+  // a syllable and its "~" notes are one unit: the word stays lit while it is held
+  const parts = [];
+  for (const n of line.notes) {
+    const last = parts[parts.length - 1];
+    if (last && isCont(n)) { last.text += shown(n); last.end = n.end; continue; }
+    parts.push({ n, text: n.text, start: n.start, end: n.end });
+  }
   const full = parts.map(p => p.text).join("").replace(/\s+/g, " ").trim();
   let x = cx - g.measureText(full).width / 2;
   let started = false;
-  for (const { n, text } of parts) {
+  for (const { n, text, start, end } of parts) {
     let t = text;
     if (!started) { t = t.replace(/^\s+/, ""); started = !!t; }
     if (!t) continue;
     const w = g.measureText(t).width;
     g.fillStyle = active ? "rgba(255,255,255,.92)" : "rgba(255,255,255,.45)";
     g.fillText(t, x, y);
-    if (active && now > n.start) {
-      const frac = Math.min(1, (now - n.start) / Math.max(0.05, n.end - n.start));
+    if (active && now > start) {
+      const frac = Math.min(1, (now - start) / Math.max(0.05, end - start));
       g.save();
       g.beginPath(); g.rect(x, y - size, w * frac, size * 2); g.clip();
       g.fillStyle = n.kind === "*" ? "#ffd24a" : "#6fb4ff";

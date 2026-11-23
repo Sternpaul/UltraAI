@@ -1,16 +1,9 @@
 name: Windows installer
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:      # build a test installer by hand (Actions tab -> Run workflow)
   push:
-    branches: [main]
-    tags: ["v*"]
-    paths:
-      - "ultraai/studio/**"
-      - "ultraai/ultrastar/**"
-      - "packaging/**"
-      - "pyproject.toml"
-      - ".github/workflows/windows-installer.yml"
+    tags: ["v*"]          # every version tag builds and publishes the installer
 
 permissions:
   contents: write   # attach the installer to a release on version tags

@@ -165,7 +165,8 @@ export class Timeline {
     const rh = Math.max(6, this.rowH());
     g.font = `${Math.min(13, Math.max(10, rh - 2))}px system-ui, sans-serif`;
     g.textBaseline = "middle";
-    for (const ln of ed.lines) for (const n of ln.notes) {
+    for (const ln of ed.lines) { let head = null; for (const n of ln.notes) {
+      if (!isCont(n)) head = n;
       if (n.end < ta || n.start > tb) continue;
       const x0 = this.x(n.start), x1 = this.x(n.end), y0 = this.y(n.pitch) - rh / 2;
       const w = Math.max(2, x1 - x0);
@@ -184,13 +185,19 @@ export class Timeline {
         g.strokeStyle = C.bad; g.lineWidth = 2; g.setLineDash([4, 3]);
         roundRect(g, x0 - 2, y0 - 2, w + 4, rh + 4, 4); g.stroke(); g.setLineDash([]); g.lineWidth = 1;
       }
-      const label = isCont(n) ? shown(n).trim() : n.text.trim();  // melisma notes stay unlabelled
+      let label = isCont(n) ? shown(n).trim() : n.text.trim();
+      const held = isCont(n) && !label && head;  // "~": the same syllable, still being sung
+      if (held) label = head.text.trim().replace(/[,.!?;:]+$/, "");
       if (label) {
         const tw = g.measureText(label).width;
+        g.globalAlpha = held ? 0.5 : 1;
+        if (held) g.font = `italic ${Math.min(13, Math.max(10, rh - 2))}px system-ui, sans-serif`;
         if (tw + 6 < w && rh >= 11) { g.fillStyle = "#fff"; g.fillText(label, x0 + 3, y0 + rh / 2); }
         else { g.fillStyle = C.fg; g.fillText(label, x0, y0 + rh + 8); }
+        g.globalAlpha = 1;
+        if (held) g.font = `${Math.min(13, Math.max(10, rh - 2))}px system-ui, sans-serif`;
       }
-    }
+    } }
     g.textBaseline = "alphabetic";
 
     // words of the lyrics missing in the song
