@@ -53,6 +53,8 @@ class SongState:
     issues: int = 0                     # open issues (after dismissals)
     dismissed: list[str] = field(default_factory=list)  # issue keys the user marked OK
     lyrics_source: str = ""
+    video: str = ""                     # file name of the music video (USDX #VIDEO), if any
+    cover: str = ""                     # cover image (USDX #COVER), if any
 
     @classmethod
     def from_dict(cls, d: dict) -> "SongState":
@@ -183,6 +185,35 @@ class Library:
         (shutil.move if move else shutil.copy2)(str(src), dst)
         self.update(sid, audio=name)
         return name
+
+    def add_media(self, sid: str, src: Path, tag: str, field: str, move: bool = True) -> str:
+        """Video / cover next to the song, USDX naming: 'Artist - Title [VD].mp4', '[CO].jpg'."""
+        folder = self.folder(sid)
+        name = f"{folder.name} [{tag}]{src.suffix.lower()}"
+        (shutil.move if move else shutil.copy2)(str(src), folder / name)
+        self.update(sid, **{field: name})
+        return name
+
+    def apply_media_headers(self, sid: str) -> None:
+        """Point the txt at the song's audio, video and cover files."""
+        txt = self.txt_path(sid)
+        if txt is None:
+            return
+        from ..ultrastar.reader import read
+        from ..ultrastar.writer import write
+
+        st = self.state(sid)
+        song = read(txt)
+        if st.audio:
+            song.set("MP3", st.audio)
+            song.set("AUDIO", st.audio)
+        if st.video:
+            song.set("VIDEO", st.video)
+            if not song.has("VIDEOGAP"):
+                song.set("VIDEOGAP", "0")  # audio and video come from the same upload
+        if st.cover:
+            song.set("COVER", st.cover)
+        write(song, txt)
 
     def delete(self, sid: str) -> None:
         with self._lock:

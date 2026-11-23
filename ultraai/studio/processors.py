@@ -76,6 +76,7 @@ class Processor:
         side = json.loads((out / "song.ultraai.json").read_text(encoding="utf-8"))
         txt.with_suffix(".ultraai.json").write_text(json.dumps(side, ensure_ascii=False), encoding="utf-8")
         n = len(side.get("issues", []))
+        self.lib.apply_media_headers(sid)
         self.lib.update(sid, state="needs_review", stage="", error="", issues=n, dismissed=[],
                         lyrics_source=side.get("lyrics_source", ""), job={},
                         language=st.language or side.get("language", ""))
@@ -186,7 +187,7 @@ class ShellTransport(SshTransport):
 
 # started detached on the server: in the CPU-capped slice if systemd is there, else nohup
 REMOTE_START = ("cd {dir} && if command -v systemd-run >/dev/null && systemd-run --user --quiet --collect "
-                "--slice=ultraai.slice --unit=ultraai-job-{id} -p WorkingDirectory=\"$PWD\" "
+                "--slice=ultraai.slice --unit=ultraai-job-{id} -p CPUWeight=1000 -p WorkingDirectory=\"$PWD\" "
                 "{ultraai} process jobs/{id} 2>/dev/null; then true; else "
                 "nohup {ultraai} process jobs/{id} > jobs/{id}/log.txt 2>&1 < /dev/null & fi")
 

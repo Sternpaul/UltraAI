@@ -150,3 +150,22 @@ def test_guess_artist_title():
     assert guess_artist_title("Agnes - Release Me (Official Video)") == ("Agnes", "Release Me")
     assert guess_artist_title("a-ha – Take On Me [Official 4K Music Video]") == ("a-ha", "Take On Me")
     assert guess_artist_title("Just A Title") == ("", "Just A Title")
+
+
+def test_media_headers(tmp_path):
+    from ultraai.studio.store import Library
+    from ultraai.ultrastar.reader import read
+
+    lib = Library(tmp_path / "lib")
+    st = lib.create("A", "B", source="https://example.invalid/v")
+    folder = lib.folder(st.id)
+    (folder / "A - B.txt").write_text(SAMPLE.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+    for name in ("x.m4a", "v.mp4", "c.jpg"):
+        (tmp_path / name).write_bytes(b"0")
+    lib.add_audio(st.id, tmp_path / "x.m4a")
+    lib.add_media(st.id, tmp_path / "v.mp4", "VD", "video")
+    lib.add_media(st.id, tmp_path / "c.jpg", "CO", "cover")
+    lib.apply_media_headers(st.id)
+    song = read(folder / "A - B.txt")
+    assert song.get("MP3") == "A - B.m4a" and song.get("VIDEO") == "A - B [VD].mp4"
+    assert song.get("COVER") == "A - B [CO].jpg" and song.get("VIDEOGAP") is not None

@@ -54,10 +54,73 @@ def youtube_info(url: str) -> dict:
         return y.extract_info(url, download=False)
 
 
-def import_youtube(lib: Library, url: str, progress=None) -> SongState:
-    """Create the song right away (state 'downloading'), then download its audio."""
+AUDIO_FORMATS = {
+    "m4a": "bestaudio[ext=m4a]/bestaudio/best",     # AAC ~128 kbit/s: every player
+    "best": "bestaudio/best",                       # usually Opus ~130-160 kbit/s in WebM
+}
+
+
+def video_format(quality: str) -> str | None:
+    """Video only (audio is separate); H.264 first, it plays in every USDX build."""
+    if quality in ("none", "", None):
+        return None
+    cap = "" if quality == "best" else f"[height<={int(quality)}]"
+    return f"bestvideo[vcodec^=avc1]{cap}/bestvideo[ext=mp4]{cap}/bestvideo{cap}"
+
+
+def _download(url: str, fmt: str, dest: Path, hook=None) -> Path:
     import yt_dlp
 
+    opts = {"quiet": True, "noplaylist": True, "format": fmt, "outtmpl": str(dest / "dl.%(ext)s"),
+            "progress_hooks": [hook] if hook else []}
+    with yt_dlp.YoutubeDL(opts) as y:
+        y.download([url])
+    return next(p for p in dest.iterdir() if p.name.startswith("dl."))
+
+
+def _cover_url(info: dict) -> str | None:
+    thumbs = [t for t in info.get("thumbnails") or [] if str(t.get("url", "")).split("?")[0].endswith(".jpg")]
+    if not thumbs:
+        return info.get("thumbnail")
+    return max(thumbs, key=lambda t: (t.get("preference") or 0, t.get("width") or 0))["url"]
+
+
+def fetch_extras(lib: Library, sid: str, settings, info: dict | None = None, progress=None) -> list[str]:
+    """Music video and cover for a song that came from a link (also for songs added earlier)."""
+    import urllib.request
+
+    st = lib.state(sid)
+    if not st.source.startswith(("http://", "https://")):
+        return []
+    info = info or youtube_info(st.source)
+    got = []
+    fmt = video_format(getattr(settings, "youtube_video", "none"))
+    if fmt and not st.video:
+        progress and progress("downloading video")
+        with tempfile.TemporaryDirectory() as tmp:
+            f = _download(st.source, fmt, Path(tmp), _hook(progress, "video"))
+            got.append(lib.add_media(sid, f, "VD", "video"))
+    if getattr(settings, "youtube_cover", False) and not st.cover and (cu := _cover_url(info)):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "cover.jpg"
+            req = urllib.request.Request(cu, headers={"User-Agent": "Mozilla/5.0"})
+            f.write_bytes(urllib.request.urlopen(req, timeout=30).read())
+            got.append(lib.add_media(sid, f, "CO", "cover"))
+    lib.apply_media_headers(sid)
+    return got
+
+
+def _hook(progress, what: str):
+    def hook(d):
+        if progress and d.get("status") == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            if total:
+                progress(f"downloading {what} {100 * d['downloaded_bytes'] / total:.0f} %")
+    return hook
+
+
+def import_youtube(lib: Library, url: str, progress=None, settings=None) -> SongState:
+    """Create the song right away (state 'downloading'), then download audio, video, cover."""
     st = lib.create("", url, source=url, state="downloading")
     try:
         info = youtube_info(url)
@@ -68,18 +131,18 @@ def import_youtube(lib: Library, url: str, progress=None) -> SongState:
             artist = artist or info.get("uploader", "").removesuffix(" - Topic")
         lib.update(st.id, artist=artist, title=title or info.get("title", url))
 
-        def hook(d):
-            if progress and d.get("status") == "downloading" and d.get("total_bytes"):
-                progress(f"downloading {100 * d['downloaded_bytes'] / d['total_bytes']:.0f} %")
-
+        fmt = AUDIO_FORMATS.get(getattr(settings, "youtube_audio", "m4a"), AUDIO_FORMATS["m4a"])
         with tempfile.TemporaryDirectory() as tmp:
-            opts = {"quiet": True, "noplaylist": True, "format": "bestaudio[ext=m4a]/bestaudio/best",
-                    "outtmpl": str(Path(tmp) / "audio.%(ext)s"), "progress_hooks": [hook]}
-            with yt_dlp.YoutubeDL(opts) as y:
-                y.download([url])
-            got = next(Path(tmp).iterdir())
+            got = _download(url, fmt, Path(tmp), _hook(progress, "audio"))
             lib.add_audio(st.id, got, move=True)
-        return lib.update(st.id, state="queued", stage="")
+        # the song can be processed while the video downloads
+        lib.update(st.id, state="queued", stage="")
+        if settings is not None:
+            try:
+                fetch_extras(lib, st.id, settings, info, progress)
+            except Exception as exc:  # noqa: BLE001 - audio is what matters
+                lib.update(st.id, error=f"video/cover download failed: {exc}")
+        return lib.state(st.id)
     except Exception as exc:  # noqa: BLE001 - shown on the song card
         lib.update(st.id, state="error", error=f"download failed: {exc}")
         raise

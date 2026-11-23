@@ -31,6 +31,24 @@
       <label>SSH port <input name="ssh_port" type="number" min="0" max="65535" placeholder="22"></label>
       <label>UltraAI folder on the server <input name="remote_dir" placeholder="UltraAI"></label>
     </fieldset>
+    <fieldset>
+      <legend>YouTube downloads</legend>
+      <label>Audio
+        <select name="youtube_audio">
+          <option value="m4a">AAC / M4A (~128 kbit/s) – plays in every USDX version</option>
+          <option value="best">Best available (usually Opus ~130–160 kbit/s, WebM)</option>
+        </select></label>
+      <label>Music video (shown behind the lyrics in USDX)
+        <select name="youtube_video">
+          <option value="none">No video</option>
+          <option value="720">Up to 720p</option>
+          <option value="1080">Up to 1080p</option>
+          <option value="best">Best available</option>
+        </select></label>
+      <label class="row"><input type="checkbox" name="youtube_cover"> Use the video thumbnail as cover</label>
+      <p class="muted">YouTube's best free audio is about 130–160 kbit/s whatever you pick; AAC and Opus sound
+        nearly the same there. Videos are downloaded as H.264 where possible (plays everywhere).</p>
+    </fieldset>
     <p class="muted" id="settings-test-result"></p>
     <div class="actions">
       <button type="button" id="settings-test" class="ghost">Test connection</button>

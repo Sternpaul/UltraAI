@@ -22,6 +22,9 @@ class Settings:
     ssh_port: int = 0
     remote_dir: str = "UltraAI"         # relative to the remote home
     remote_ultraai: str = ".venv/bin/ultraai"  # relative to remote_dir
+    youtube_audio: str = "m4a"          # "m4a": AAC, plays everywhere; "best": Opus/WebM if better
+    youtube_video: str = "1080"         # "none" | "720" | "1080" | "best"  (music video for USDX)
+    youtube_cover: bool = True          # thumbnail as #COVER
     extra: dict = field(default_factory=dict)
 
     @classmethod
