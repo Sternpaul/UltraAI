@@ -169,3 +169,27 @@ def test_media_headers(tmp_path):
     song = read(folder / "A - B.txt")
     assert song.get("MP3") == "A - B.m4a" and song.get("VIDEO") == "A - B [VD].mp4"
     assert song.get("COVER") == "A - B [CO].jpg" and song.get("VIDEOGAP") is not None
+
+
+def test_rename_and_usdb(tmp_path):
+    from ultraai.studio.store import Library, usdb_text, youtube_id
+    from ultraai.ultrastar.reader import read
+
+    lib = Library(tmp_path / "lib")
+    url = "https://www.youtube.com/watch?v=UbstNV2FUNY&list=x"
+    st = lib.create("", url, source=url)
+    folder = lib.folder(st.id)
+    assert folder.name.startswith(" -") is False and "youtube" in folder.name
+    (folder / f"{folder.name}.txt").write_text(SAMPLE.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+    (tmp_path / "a.m4a").write_bytes(b"0")
+    lib.add_audio(st.id, tmp_path / "a.m4a")
+    lib.update(st.id, artist="Kingfishr", title="The Blade")
+    new = lib.rename_to_meta(st.id)
+    assert new.name == "Kingfishr - The Blade"
+    assert sorted(p.name for p in new.iterdir() if p.is_file()) == ["Kingfishr - The Blade.m4a", "Kingfishr - The Blade.txt"]
+    song = read(new / "Kingfishr - The Blade.txt")
+    assert song.get("MP3") == "Kingfishr - The Blade.m4a" and song.get("ARTIST") == "Kingfishr"
+    assert song.get("VIDEOURL") == "https://www.youtube.com/watch?v=UbstNV2FUNY"
+    assert youtube_id("https://youtu.be/UbstNV2FUNY?t=3") == "UbstNV2FUNY"
+    u = usdb_text((new / "Kingfishr - The Blade.txt").read_text(encoding="utf-8"), url)
+    assert "#VIDEO:v=UbstNV2FUNY" in u and "#VIDEOURL" not in u

@@ -22,15 +22,22 @@ and run it (per-user install, no admin rights; Windows may warn about an unknown
 3. **Review**: songs marked *Needs review* open in the editor at the first uncertain spot.
 4. Songs without lyrics online get *Add lyrics* (prefilled with what speech recognition heard).
 
-The library is a normal USDX song folder – point UltraStar Deluxe at it.
+The library is a normal USDX song folder (`Artist - Title/Artist - Title.txt`, `.m4a`/`.ogg`,
+`[VD].mp4`, `[CO].jpg`; the YouTube link is kept as `#AUDIOURL`/`#VIDEOURL`) – point UltraStar Deluxe at it.
 
 ### Editor in one minute
 
 * Top: preview as the game shows it. Middle: notes over the singer's pitch curve (orange),
   with what speech recognition heard (grey words) and the vocal waveform. Red areas are
   places to check; the list on the right explains why. `Tab` jumps to the next one.
-* Drag notes in time/pitch, drag their edges, drag the ▼ line-break markers.
-* `Enter` edits a line's text; `|` separates syllables (`Re|lease my bo|dy`).
+* The issue list also checks live, while you edit: words of the lyrics missing in the song
+  (red ▲), words that are not in the lyrics (red dashed notes), notes that do not match the
+  voice, flat notes where the voice moves, and unusual jumps (often backing vocals or noise).
+* Drag notes in time/pitch, drag their edges, drag the ▼ line-break markers. `N` adds a note.
+* Double-click a note to change its syllable (`Tab` = next note); `Enter` edits the whole line
+  (`|` separates syllables: `Re|lease my bo|dy`).
+* *★ Golden notes…* re-places golden notes (hard jumps, big held notes, highest notes, mix).
+* *USDB* shows the txt ready for usdb.animux.de (`#VIDEO:v=<YouTube id>` for USDB Syncer).
 * `T` (tap mode): the line plays, hold any letter key for each syllable – fastest way to
   re-time a line. `P` sets selected notes to the sung pitch.
 * `Space` play, `L` loop, `V` vocals only, `[` `]` speed, `Ctrl+Z` undo, `?` all shortcuts.

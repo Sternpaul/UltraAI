@@ -22,9 +22,12 @@ import re
 import shutil
 import threading
 import time
+import logging
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+log = logging.getLogger("ultraai.library")
 
 AUDIO_EXT = {".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wav", ".aac", ".webm"}
 STATES = ("downloading", "queued", "processing", "needs_lyrics", "needs_review", "reviewed",
@@ -196,8 +199,39 @@ class Library:
         self.update(sid, **{field: name})
         return name
 
+    def rename_to_meta(self, sid: str) -> Path:
+        """Folder and files named 'Artist - Title' (as USDX/USDB expect); the txt follows."""
+        with self._lock:
+            st = self.state(sid)
+            folder = self.folder(sid)
+            if not (st.artist or st.title) or st.state in ("processing",):
+                return folder
+            want = safe_name(f"{st.artist} - {st.title}")
+            if folder.name == want:
+                return folder
+            target, k = self.root / want, 2
+            while target.exists():
+                target, k = self.root / f"{want} ({k})", k + 1
+            old = folder.name
+            folder.rename(target)
+            self._index[sid] = target
+            renamed = {}
+            for f in sorted(target.iterdir()):
+                if f.is_file() and f.name.startswith(old):
+                    new = target / (target.name + f.name[len(old):])
+                    f.rename(new)
+                    renamed[f.name] = new.name
+            st.audio = renamed.get(st.audio, st.audio)
+            st.video = renamed.get(st.video, st.video)
+            st.cover = renamed.get(st.cover, st.cover)
+            self.save_state(st)
+            log.info("renamed %r -> %r", old, target.name)
+        self.apply_media_headers(sid)
+        return target
+
     def apply_media_headers(self, sid: str) -> None:
-        """Point the txt at the song's audio, video and cover files."""
+        """Point the txt at the song's files; title/artist from the Studio; the YouTube link
+        as #AUDIOURL/#VIDEOURL (format 1.0.0) so the song can be shared and found again."""
         txt = self.txt_path(sid)
         if txt is None:
             return
@@ -206,6 +240,13 @@ class Library:
 
         st = self.state(sid)
         song = read(txt)
+        if st.artist:
+            song.set("ARTIST", st.artist)
+        if st.title:
+            song.set("TITLE", st.title)
+        if yt := youtube_id(st.source):
+            song.set("AUDIOURL", f"https://www.youtube.com/watch?v={yt}")
+            song.set("VIDEOURL", f"https://www.youtube.com/watch?v={yt}")
         if st.audio:
             song.set("MP3", st.audio)
             song.set("AUDIO", st.audio)
@@ -237,6 +278,27 @@ class Library:
     def versions(self, sid: str) -> list[dict]:
         d = self.studio_dir(sid) / "versions"
         return [{"name": p.name, "time": p.stat().st_mtime} for p in sorted(d.glob("*.txt"))] if d.exists() else []
+
+
+def youtube_id(url: str) -> str | None:
+    """11-character video id of a YouTube link (watch, youtu.be, shorts, music)."""
+    m = re.search(r"(?:v=|youtu\.be/|/shorts/|/embed/|/live/)([A-Za-z0-9_-]{11})", url or "")
+    return m.group(1) if m else None
+
+
+def usdb_text(txt_text: str, source: str) -> str:
+    """The song as USDB expects it: #VIDEO carries the meta tags (v=<YouTube id>) that
+    USDB Syncer uses to fetch audio and video; local-only lines are left out."""
+    from ..ultrastar.reader import parse
+    from ..ultrastar.writer import dumps
+
+    song = parse(txt_text)
+    yt = youtube_id(source) or youtube_id(song.get("VIDEOURL") or "") or youtube_id(song.get("AUDIOURL") or "")
+    for k in ("VIDEO", "VIDEOGAP", "AUDIOURL", "VIDEOURL", "COVERURL", "BACKGROUNDURL"):
+        song.set(k, None)
+    if yt:
+        song.set("VIDEO", f"v={yt}")
+    return dumps(song)
 
 
 def _split_name(name: str) -> tuple[str, str]:

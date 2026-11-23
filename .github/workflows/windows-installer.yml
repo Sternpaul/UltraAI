@@ -20,9 +20,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -92,7 +92,7 @@ jobs:
           }
           iscc /DAppVersion=${{ steps.ver.outputs.version }} packaging\installer.iss
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: UltraAI-Studio-Setup-${{ steps.ver.outputs.version }}
           path: dist/UltraAI-Studio-Setup-*.exe
