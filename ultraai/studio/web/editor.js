@@ -101,6 +101,9 @@ export async function openEditor(root, id, crumbs) {
   const speedSel = h("select", { "aria-label": "Speed", onchange: e => setSpeed(Number(e.target.value)) },
     ...[["1", "100 %"], ["0.75", "75 %"], ["0.5", "50 %"]].map(([v, l]) => h("option", { value: v }, l)));
   const srcBtn = btn("Vocals", "Hear only the separated vocals (V)", () => setSource(audio !== voc), { "aria-pressed": "false", disabled: !voc });
+  let showPreview = true;
+  try { showPreview = localStorage.getItem("ultraai.preview") !== "off"; } catch { /* no storage */ }
+  const previewBtn = btn("Preview", "Show / hide the game preview on top", () => setPreview(!showPreview), { "aria-pressed": String(showPreview) });
   const loopBtn = btn("Loop", "Loop the selection / current issue (L)", () => toggleLoop(), { "aria-pressed": "false" });
   const undoBtn = btn("↶", "Undo (Ctrl+Z)", () => doUndo(), { disabled: true });
   const redoBtn = btn("↷", "Redo (Ctrl+Y)", () => doRedo(), { disabled: true });
@@ -117,7 +120,7 @@ export async function openEditor(root, id, crumbs) {
     ...doc.voices.map((v, k) => h("option", { value: String(k) }, `Singer ${v.voice}`))) : null;
 
   const toolbar = h("div", { class: "toolbar" },
-    h("div", { class: "group" }, playBtn, timeEl, speedSel, srcBtn, loopBtn),
+    h("div", { class: "group" }, playBtn, timeEl, speedSel, srcBtn, loopBtn, previewBtn),
     h("div", { class: "group" },
       btn("Text", "Edit the line's text and syllables (Enter / double-click)", () => editLine()),
       btn("Tap", "Re-time the current line by tapping along (T)", () => startTap()),
@@ -141,7 +144,14 @@ export async function openEditor(root, id, crumbs) {
   const pvCanvas = h("canvas", { "aria-label": "Game preview" });
   const tlCanvas = h("canvas", { role: "application", "aria-label": "Notes timeline. Use the lines list for text." });
   const ovCanvas = h("canvas", { "aria-hidden": "true" });
-  const preview = h("div", { class: "preview" }, pvCanvas);
+  const preview = h("div", { class: "preview", hidden: !showPreview }, pvCanvas);
+  function setPreview(on) {
+    showPreview = on;
+    preview.hidden = !on;
+    previewBtn.setAttribute("aria-pressed", String(on));
+    try { localStorage.setItem("ultraai.preview", on ? "on" : "off"); } catch { /* no storage */ }
+    render();
+  }
   const timelineEl = h("div", { class: "timeline" }, tlCanvas);
   const overview = h("div", { class: "overview", title: "Whole song – click to jump" }, ovCanvas);
   const hint = h("div", { class: "hint" }, "Red areas: the machine is unsure. Orange curve: what is sung. Grey words: what speech recognition heard. Press ? for shortcuts.");
@@ -754,7 +764,7 @@ export async function openEditor(root, id, crumbs) {
     playBtn.textContent = playing() ? "❚❚" : "▶";
     timeEl.textContent = fmtTime(t);
     tl.draw(t);
-    drawPreview(pvCanvas, ed.lines, t);
+    if (showPreview) drawPreview(pvCanvas, ed.lines, t);
     drawOverview(ovCanvas, ed, tl, t);
     markCurrentLine();
   }
