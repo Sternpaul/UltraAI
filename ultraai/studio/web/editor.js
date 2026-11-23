@@ -4,6 +4,8 @@ import {
   MIN_NOTE, applyLineText, copyToRepeats, curveOffset, curvePitch, flatten, isCont, lineEnd, lineStart, lineText,
   lineToEditText, normalize, repeatsOf, lineAt, copyLineNotes,
 } from "./model.js";
+import { PRESETS, applyPreset } from "./golden.js";
+import { lyricIssues } from "./lyricsdiff.js";
 import { drawPreview } from "./preview.js";
 import { Timeline, drawOverview } from "./timeline.js";
 
@@ -11,12 +13,14 @@ const SHORTCUTS = [
   ["Space", "Play / pause"], ["Click", "Move the playhead (empty area) / select a note"],
   ["Drag note", "Move in time and pitch"], ["Drag note edge", "Change start / end"],
   ["Drag ▼ marker", "Move a line break"], ["Drag empty area", "Select several notes"],
-  ["Shift+click", "Add to selection"], ["Double-click note", "Edit the line's text and syllables"],
+  ["Shift+click", "Add to selection"],
   ["Double-click empty", "Add a note"], ["← / →", "Nudge selected notes 10 ms (Shift: 100 ms), else move playhead"],
   ["↑ / ↓", "Pitch ± 1 semitone (Shift: octave)"], ["P", "Pitch of selection = what is sung"],
   ["Enter", "Edit the current line's text"], ["T", "Tap mode: re-time the current line by tapping"],
   ["S", "Split note"], ["M", "Merge note with the next"], ["Delete", "Delete selected notes"],
-  ["G / F / R / N", "Golden / freestyle / rap / normal note"], ["B", "Start a new line at the selected note"],
+  ["N", "New note at the mouse (or the playhead); type its syllable"],
+  ["Double-click note", "Edit that note's syllable (Tab: next note)"],
+  ["G / F / R", "Golden / freestyle / rap (press again: normal)"], ["B", "Start a new line at the selected note"],
   ["C", "Copy this line's pitches and golden notes to all its repeats"],
   ["Shift+B", "Join the line with the next"], ["L", "Loop selection / current issue"],
   ["V", "Switch mix / vocals only"], ["[ / ]", "Slower / faster"], ["Tab / Shift+Tab", "Next / previous issue"],
@@ -40,11 +44,23 @@ export async function openEditor(root, id, crumbs) {
   const doc = data.doc;
   const ed = {
     voice: 0, lines: doc.voices[0].lines, selection: new Set(), editor: editorData,
-    issues: data.issues.map(i => ({ ...i })).sort((a, b) => b.risk - a.risk),
+    issues: data.issues.map(i => ({ ...i })).sort((a, b) => b.risk - a.risk), extraNotes: new Set(), missingMarks: [],
     currentIssue: null, loop: null, band: null, hoverBreak: null, duration: 0, curveOffset: 0,
     pitchSpan: { lo: 0, hi: 12 },
   };
   const undo = [], redo = [];
+  const serverIssues = ed.issues;
+  const lyricText = data.lyrics_info?.text || null;
+  const dismissedKeys = new Set(data.dismissed || []);
+  function refreshLyricIssues() {
+    if (!lyricText) return;
+    const cur = ed.currentIssue?.key;
+    const li = lyricIssues(ed.lines, lyricText).map(i => ({ ...i, dismissed: dismissedKeys.has(i.key) }));
+    ed.issues = [...serverIssues, ...li].sort((a, b) => b.risk - a.risk);
+    ed.extraNotes = new Set(li.filter(i => i.kind === "lyrics_extra" && !i.dismissed).flatMap(i => i.notes));
+    ed.missingMarks = li.filter(i => i.kind === "lyrics_missing" && !i.dismissed);
+    ed.currentIssue = cur ? ed.issues.find(i => i.key === cur) ?? null : null;
+  }
   let dirty = false, saving = false, saveTimer = null, saveState = "saved";
 
   // ---------------------------------------------------------------- audio
@@ -90,6 +106,12 @@ export async function openEditor(root, id, crumbs) {
   const saveEl = h("span", { class: "savestate", role: "status" }, "Saved");
   const reviewedBtn = btn(info.state === "reviewed" ? "✓ Done" : "Mark as done", "Mark this song as reviewed", () => markReviewed(),
     { class: info.state === "reviewed" ? "" : "primary" });
+  const goldenSel = h("select", { "aria-label": "Golden notes preset", title: "Choose where the golden notes go (whole song, undoable)",
+      onchange: e => { if (e.target.value) goldenPreset(e.target.value); e.target.value = ""; } },
+    h("option", { value: "" }, "★ Golden notes…"),
+    ...PRESETS.map(([v, label, why]) => h("option", { value: v, title: why }, label)));
+  const goldenShare = h("select", { "aria-label": "Share of golden notes", title: "How many notes are golden" },
+    ...[["0.02", "2 %"], ["0.04", "4 %"], ["0.06", "6 %"], ["0.08", "8 %"]].map(([v, l]) => h("option", { value: v, selected: v === "0.04" }, l)));
   const voiceSel = doc.voices.length > 1 ? h("select", { "aria-label": "Singer", onchange: e => switchVoice(Number(e.target.value)) },
     ...doc.voices.map((v, k) => h("option", { value: String(k) }, `Singer ${v.voice}`))) : null;
 
@@ -104,10 +126,12 @@ export async function openEditor(root, id, crumbs) {
       btn("Delete", "Delete the selected notes (Del)", () => deleteNotes())),
     h("div", { class: "group" },
       btn("★", "Golden note (G)", () => setKind("*")), btn("F", "Freestyle (F)", () => setKind("F")),
-      btn("R", "Rap (R)", () => setKind("R")), btn("N", "Normal (N)", () => setKind(":")),
+      btn("R", "Rap (R)", () => setKind("R")),
+      btn("+ Note", "New note at the playhead (N, or double-click an empty spot)", () => newNote()),
       btn("Copy to repeats", "Give every repeat of this line the same pitches and golden notes (C)", () => copyRepeats()),
       btn("New line", "Start a new line at the selected note (B)", () => breakLine()),
       btn("Join", "Join the line with the next (Shift+B)", () => joinLine())),
+    h("div", { class: "group" }, goldenSel, goldenShare),
     h("div", { class: "group" }, undoBtn, redoBtn, voiceSel),
     h("span", { class: "spacer" }),
     h("div", { class: "group" }, saveEl, reviewedBtn, btn("?", "Shortcuts (?)", () => help())));
@@ -168,6 +192,8 @@ export async function openEditor(root, id, crumbs) {
   function changed(record = true) {
     normalize(ed.lines);
     refreshDerived();
+    refreshLyricIssues();
+    renderIssues();
     dirty = true;
     setSave("unsaved");
     clearTimeout(saveTimer);
@@ -219,7 +245,8 @@ export async function openEditor(root, id, crumbs) {
   }
   function setKind(kind) {
     const s = needSel(); if (!s.length) return;
-    remember(); for (const { n } of s) n.kind = kind; changed();
+    const all = s.every(({ n }) => n.kind === kind);  // pressing again switches back to normal
+    remember(); for (const { n } of s) n.kind = all ? ":" : kind; changed();
   }
   function deleteNotes() {
     const s = needSel(); if (!s.length) return;
@@ -262,6 +289,13 @@ export async function openEditor(root, id, crumbs) {
     line.break = prevEnd + Math.min(0.3, (rest[0].start - prevEnd) / 2);
     changed();
   }
+  function goldenPreset(preset) {
+    remember();
+    const n = applyPreset(ed.lines, preset, ed.editor, Number(goldenShare.value));
+    changed();
+    const label = PRESETS.find(p => p[0] === preset)?.[1] ?? preset;
+    toast(preset === "none" ? "Golden notes removed" : `Golden notes: ${label} – ${n} syllable${n === 1 ? "" : "s"}`);
+  }
   function copyRepeats() {
     const li = currentLineIndex(), line = ed.lines[li];
     if (!line) return;
@@ -284,7 +318,9 @@ export async function openEditor(root, id, crumbs) {
     ed.lines.forEach((ln, i) => { if (ln.notes.length && lineStart(ln) <= t) li = i; });
     const line = ed.lines[li];
     if (!line) return;
-    const after = line.notes.filter(n => n.start > t)[0];
+    const inside = flatten(ed.lines).find(f => f.n.start <= t && f.n.end > t);
+    if (inside) t = inside.n.end + 0.01;  // clicked on a note's time: the new one goes right after it
+    const after = flatten(ed.lines).map(f => f.n).filter(n => n.start >= t).sort((a, b) => a.start - b.start)[0];
     const before = [...line.notes].reverse().find(n => n.end <= t);
     const start = Math.max(t, before ? before.end : t);
     const end = Math.min(start + 0.25, after ? after.start : start + 0.25);
@@ -292,7 +328,58 @@ export async function openEditor(root, id, crumbs) {
     remember();
     const n = { start, end, pitch, text: "~", kind: ":" };
     line.notes.push(n); ed.selection.clear(); ed.selection.add(n); changed();
-    toast("Note added – use Text (Enter) to give it a syllable");
+    editNoteText(n);
+  }
+  function newNote() {
+    let t, p;
+    if (mouse.inside && mouse.y > 24 && mouse.y < tl.pitchBottom) { t = tl.t(mouse.x); p = tl.pitchAtY(mouse.y); }
+    else {
+      t = now();
+      const ln = ed.lines[currentLineIndex()];
+      const near = ln?.notes.length ? ln.notes[0].pitch : 0;
+      p = curvePitch(ed.editor, t, t + 0.25, near);
+    }
+    addNoteAt(t, p);
+  }
+
+  // ---------------------------------------------------------------- note text (inline)
+  let noteInput = null;
+  function editNoteText(n) {
+    if (noteInput) noteInput.remove();
+    const flat = flatten(ed.lines);
+    tl.ensureVisible(n.start); render(); tl.draw(now());
+    const lead = n.text.match(/^\s*/)[0], trail = n.text.match(/\s*$/)[0];
+    const input = h("input", { class: "noteinput", value: n.text.trim(), spellcheck: "false",
+      "aria-label": "Syllable of this note", title: "Enter: save · Tab: next note · Esc: cancel · end with a space = end of word" });
+    const x = Math.max(0, tl.x(n.start)), y = Math.max(0, tl.y(n.pitch) - 30);
+    input.style.left = `${x}px`; input.style.top = `${y}px`;
+    timelineEl.append(input);
+    noteInput = input;
+    input.focus(); input.select();
+    let done = false;
+    const finish = (save, move = 0) => {
+      if (done) return;
+      done = true;
+      const v = input.value;
+      input.remove(); noteInput = null;
+      if (save && v.trim() && v.trim() + (/\s$/.test(v) ? " " : "") !== n.text.trim()) {
+        remember();
+        n.text = lead + v.trim() + (/\s$/.test(v) ? " " : trail);
+        changed();
+      }
+      if (move) {
+        const k = flat.findIndex(f => f.n === n) + move;
+        if (k >= 0 && k < flat.length) { ed.selection.clear(); ed.selection.add(flat[k].n); editNoteText(flat[k].n); }
+      }
+      tlCanvas.focus?.();
+    };
+    input.addEventListener("keydown", e => {
+      e.stopPropagation();
+      if (e.key === "Enter") { e.preventDefault(); finish(true); }
+      else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+      else if (e.key === "Tab") { e.preventDefault(); finish(true, e.shiftKey ? -1 : 1); }
+    });
+    input.addEventListener("blur", () => finish(true));
   }
 
   // ---------------------------------------------------------------- line text dialog
@@ -393,6 +480,8 @@ export async function openEditor(root, id, crumbs) {
   }
   async function dismiss(is) {
     is.dismissed = true;
+    dismissedKeys.add(is.key);
+    if (is.kind?.startsWith("lyrics_")) refreshLyricIssues();
     try { await api(`/api/songs/${id}/issues/dismiss`, { method: "POST", json: { key: is.key } }); }
     catch (e) { toast(e.message); }
     renderIssues(); render();
@@ -449,7 +538,9 @@ export async function openEditor(root, id, crumbs) {
         h("span", { class: "risk", style: `background:${riskColor(is.risk)}`, title: `risk ${Math.round(is.risk * 100)} %` }),
         h("span", { class: "t" }, fmtTime(is.start).replace(/\.\d+$/, "")),
         h("div", { class: "txt" },
-          h("div", {}, is.kind === "missing_lyrics" ? `Heard but not in lyrics: “${is.text}”` : is.text),
+          h("div", {}, is.kind === "missing_lyrics" ? `Heard but not in lyrics: “${is.text}”`
+            : is.kind === "lyrics_missing" ? `Missing word${/\s/.test(is.text) ? "s" : ""}: “${is.text}”`
+            : is.kind === "lyrics_extra" ? `Not in the lyrics: “${is.text}”` : is.text),
           h("div", { class: "why" }, (is.reasons || []).join(" · "))),
         is.dismissed || is.kind !== "repeat" ? null : h("button", { type: "button", class: "small primary",
           title: "Use the notes of the other repeats here", onclick: e => { e.stopPropagation(); makeSame(is); } }, "Make same"),
@@ -481,6 +572,9 @@ export async function openEditor(root, id, crumbs) {
 
   // ---------------------------------------------------------------- pointer interaction
   let drag = null;
+  const mouse = { x: 0, y: 0, inside: false };
+  tlCanvas.addEventListener("pointerenter", () => { mouse.inside = true; });
+  tlCanvas.addEventListener("pointerleave", () => { mouse.inside = false; });
   const pos = e => { const r = tlCanvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
   tlCanvas.addEventListener("pointerdown", e => {
     if (e.button !== 0) return;
@@ -502,6 +596,7 @@ export async function openEditor(root, id, crumbs) {
   });
   tlCanvas.addEventListener("pointermove", e => {
     const [x, y] = pos(e);
+    mouse.x = x; mouse.y = y;
     if (!drag) {
       const hit = tl.hit(x, y);
       tlCanvas.style.cursor = hit.kind === "start" || hit.kind === "end" || hit.kind === "break" ? "ew-resize"
@@ -561,7 +656,7 @@ export async function openEditor(root, id, crumbs) {
   tlCanvas.addEventListener("dblclick", e => {
     const [x, y] = pos(e);
     const hit = tl.hit(x, y);
-    if (hit.kind === "note" || hit.kind === "start" || hit.kind === "end") editLine(hit.li);
+    if (hit.kind === "note" || hit.kind === "start" || hit.kind === "end") editNoteText(hit.n);
     else if (y > 24 && y < tl.pitchBottom) addNoteAt(tl.t(x), tl.pitchAtY(y));
   });
   tlCanvas.addEventListener("wheel", e => {
@@ -605,7 +700,7 @@ export async function openEditor(root, id, crumbs) {
       "=": () => { tl.zoomAt(tl.x(now()), 1.25); render(); }, "-": () => { tl.zoomAt(tl.x(now()), 0.8); render(); },
       "[": () => setSpeed(speed - 0.25), "]": () => setSpeed(speed + 0.25), Home: () => seek(0),
     }[k] ?? {
-      s: splitNote, m: mergeNote, g: () => setKind("*"), f: () => setKind("F"), r: () => setKind("R"), n: () => setKind(":"),
+      s: splitNote, m: mergeNote, g: () => setKind("*"), f: () => setKind("F"), r: () => setKind("R"), n: newNote,
       p: snapPitch, t: startTap, l: toggleLoop, c: copyRepeats, v: () => setSource(audio !== voc), b: () => (e.shiftKey ? joinLine() : breakLine()),
     }[k.toLowerCase()];
     if (act) { e.preventDefault(); act(); }
@@ -644,6 +739,7 @@ export async function openEditor(root, id, crumbs) {
   themeMq.addEventListener("change", onTheme);
 
   // initial view: first issue, else start
+  refreshLyricIssues();
   renderIssues(); renderLines(); updateUndo();
   tl.pps = 140;
   const first = ed.issues.find(i => !i.dismissed);

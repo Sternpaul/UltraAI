@@ -180,6 +180,10 @@ export class Timeline {
       g.globalAlpha = 1;
       if (n.kind === "F") { g.strokeStyle = C.muted; g.setLineDash([3, 3]); roundRect(g, x0, y0, w, rh, 3); g.stroke(); g.setLineDash([]); }
       if (sel) { g.strokeStyle = C.fg; g.lineWidth = 2; roundRect(g, x0 - 1, y0 - 1, w + 2, rh + 2, 4); g.stroke(); g.lineWidth = 1; }
+      if (ed.extraNotes?.has(n)) {  // not in the lyrics
+        g.strokeStyle = C.bad; g.lineWidth = 2; g.setLineDash([4, 3]);
+        roundRect(g, x0 - 2, y0 - 2, w + 4, rh + 4, 4); g.stroke(); g.setLineDash([]); g.lineWidth = 1;
+      }
       const label = isCont(n) ? shown(n).trim() : n.text.trim();  // melisma notes stay unlabelled
       if (label) {
         const tw = g.measureText(label).width;
@@ -188,6 +192,16 @@ export class Timeline {
       }
     }
     g.textBaseline = "alphabetic";
+
+    // words of the lyrics missing in the song
+    g.font = "bold 11px system-ui, sans-serif";
+    for (const m of ed.missingMarks || []) {
+      if (m.start < ta - 1 || m.start > tb) continue;
+      const x = this.x(m.start) - 3, y = this.pitchBottom - 4;
+      g.fillStyle = C.bad;
+      g.beginPath(); g.moveTo(x, y - 10); g.lineTo(x - 6, y); g.lineTo(x + 6, y); g.closePath(); g.fill();
+      g.fillText(`+ ${m.text.length > 24 ? m.text.slice(0, 23) + "…" : m.text}`, x + 8, y - 1);
+    }
 
     // line breaks
     g.strokeStyle = C.muted; g.setLineDash([4, 4]);

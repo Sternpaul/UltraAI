@@ -307,7 +307,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
             issues.append(i)
         sd = lib.folder(sid) / ".studio"
         base = f"/api/songs/{sid}/media"
-        return {"doc": song_to_doc(song), "issues": issues, "state": st.state,
+        return {"doc": song_to_doc(song), "issues": issues, "state": st.state, "dismissed": st.dismissed,
                 "audio": f"{base}/audio" if st.audio or song.audio else None,
                 "vocals": f"{base}/vocals" if (sd / "vocals.ogg").exists() else None,
                 "editor": f"{base}/editor" if (sd / "editor.json").exists() else None,
