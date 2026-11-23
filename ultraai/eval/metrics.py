@@ -159,7 +159,7 @@ def compare(ref: Song, hyp: Song, voice: int = 1) -> dict[str, float]:
     onset = [hw[j].start - rw[i].start for i, j in pairs]
     m.update(_err_stats(onset, "onset"))
     # same, after removing the song's constant offset (references are often shifted as a whole)
-    near = [e for e in onset if abs(e) < 0.5]
+    near = [e for e in onset if abs(e) < 1.5]  # whole-file shifts of up to ~1 s are common
     shift = statistics.median(near) if near else 0.0
     m["constant_offset_ms"] = 1000 * shift
     m.update(_err_stats([e - shift for e in onset], "onset_rel"))
