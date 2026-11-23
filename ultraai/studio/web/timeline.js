@@ -136,6 +136,18 @@ export class Timeline {
     }
     g.globalAlpha = 1;
 
+    // other copies of a linked line
+    if (ed.linkSpans?.length > 1) {
+      g.strokeStyle = C.accent; g.lineWidth = 1.5; g.setLineDash([6, 4]);
+      for (const [a, b] of ed.linkSpans) {
+        if (b < ta || a > tb) continue;
+        g.strokeRect(this.x(a) - 3, TOP + 2, this.x(b) - this.x(a) + 6, this.pitchBottom - TOP - 4);
+      }
+      g.setLineDash([]); g.lineWidth = 1;
+      g.fillStyle = C.accent; g.font = "bold 11px system-ui, sans-serif";
+      for (const [a, b] of ed.linkSpans) if (b >= ta && a <= tb) g.fillText(`🔗 ×${ed.linkSpans.length}`, this.x(a), TOP + 14);
+    }
+
     // loop region
     if (ed.loop) {
       g.fillStyle = C.accent; g.globalAlpha = 0.08;
