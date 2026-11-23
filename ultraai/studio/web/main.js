@@ -95,6 +95,8 @@ function library() {
     if (/^https?:/.test(s.source || "") && (!s.video || !s.cover) && s.state !== "downloading")
       acts.push(h("button", { type: "button", class: "ghost small", title: "Download the music video and cover (Settings decide the quality)",
         onclick: () => getExtras(s) }, "Video"));
+    acts.push(h("button", { type: "button", class: "ghost small", title: "Edit artist / title / language", "aria-label": `Edit ${s.title}`,
+      onclick: () => infoDialog(s, load) }, "✎"));
     acts.push(h("button", { type: "button", class: "ghost small", title: "Remove from library", "aria-label": `Remove ${s.title}`, onclick: () => remove(s) }, "✕"));
     const sub = s.stage ? s.stage : lyricsLabel(s.lyrics_info, s.lyrics_source);
     const p = s.progress || {};
@@ -225,6 +227,21 @@ addEventListener("drop", e => {
   e.preventDefault(); dragDepth = 0; overlay.hidden = true;
   upload([...e.dataTransfer.files]);
 });
+
+// ------------------------------------------------------------------ song info dialog
+function infoDialog(s, after) {
+  const dlg = document.getElementById("info-dialog"), f = dlg.querySelector("form");
+  f.elements.artist.value = s.artist || ""; f.elements.title.value = s.title || ""; f.elements.language.value = s.language || "";
+  dlg.returnValue = "";
+  dlg.showModal();
+  dlg.addEventListener("close", async () => {
+    if (dlg.returnValue !== "save") return;
+    try {
+      await api(`/api/songs/${s.id}`, { method: "PATCH", json: { artist: f.elements.artist.value.trim(), title: f.elements.title.value.trim(), language: f.elements.language.value.trim() } });
+      toast("Saved"); after?.();
+    } catch (e) { toast(e.message); }
+  }, { once: true });
+}
 
 // ------------------------------------------------------------------ lyrics dialog
 export async function lyricsDialog(id, after) {

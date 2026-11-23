@@ -167,6 +167,7 @@ def import_youtube(lib: Library, url: str, progress=None, settings=None) -> Song
             artist, title = guess_artist_title(info.get("title", ""))
             artist = artist or info.get("uploader", "").removesuffix(" - Topic")
         lib.update(st.id, artist=artist, title=title or info.get("title", url))
+        lib.rename_to_meta(st.id)  # "Artist - Title" folder before anything is saved in it
 
         fmt = AUDIO_FORMATS.get(getattr(settings, "youtube_audio", "m4a"), AUDIO_FORMATS["m4a"])
         with tempfile.TemporaryDirectory() as tmp:

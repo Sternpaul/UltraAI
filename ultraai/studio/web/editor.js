@@ -6,6 +6,7 @@ import {
 } from "./model.js";
 import { PRESETS, applyPreset } from "./golden.js";
 import { lyricIssues } from "./lyricsdiff.js";
+import { pitchIssues } from "./pitchcheck.js";
 import { drawPreview } from "./preview.js";
 import { Timeline, drawOverview } from "./timeline.js";
 
@@ -52,10 +53,10 @@ export async function openEditor(root, id, crumbs) {
   const serverIssues = ed.issues;
   const lyricText = data.lyrics_info?.text || null;
   const dismissedKeys = new Set(data.dismissed || []);
-  function refreshLyricIssues() {
-    if (!lyricText) return;
+  function refreshLyricIssues() {  // live checks: lyrics vs song, notes vs voice
     const cur = ed.currentIssue?.key;
-    const li = lyricIssues(ed.lines, lyricText).map(i => ({ ...i, dismissed: dismissedKeys.has(i.key) }));
+    const live = [...(lyricText ? lyricIssues(ed.lines, lyricText) : []), ...pitchIssues(ed.lines, ed.editor, ed.curveOffset)];
+    const li = live.map(i => ({ ...i, dismissed: dismissedKeys.has(i.key) }));
     ed.issues = [...serverIssues, ...li].sort((a, b) => b.risk - a.risk);
     ed.extraNotes = new Set(li.filter(i => i.kind === "lyrics_extra" && !i.dismissed).flatMap(i => i.notes));
     ed.missingMarks = li.filter(i => i.kind === "lyrics_missing" && !i.dismissed);
@@ -134,7 +135,8 @@ export async function openEditor(root, id, crumbs) {
     h("div", { class: "group" }, goldenSel, goldenShare),
     h("div", { class: "group" }, undoBtn, redoBtn, voiceSel),
     h("span", { class: "spacer" }),
-    h("div", { class: "group" }, saveEl, reviewedBtn, btn("?", "Shortcuts (?)", () => help())));
+    h("div", { class: "group" }, saveEl, btn("USDB", "The txt ready for uploading to USDB (with the YouTube link)", () => usdbDialog()),
+      reviewedBtn, btn("?", "Shortcuts (?)", () => help())));
 
   const pvCanvas = h("canvas", { "aria-label": "Game preview" });
   const tlCanvas = h("canvas", { role: "application", "aria-label": "Notes timeline. Use the lines list for text." });
@@ -481,7 +483,7 @@ export async function openEditor(root, id, crumbs) {
   async function dismiss(is) {
     is.dismissed = true;
     dismissedKeys.add(is.key);
-    if (is.kind?.startsWith("lyrics_")) refreshLyricIssues();
+    if (is.kind?.startsWith("lyrics_") || is.kind?.startsWith("pitch_")) refreshLyricIssues();
     try { await api(`/api/songs/${id}/issues/dismiss`, { method: "POST", json: { key: is.key } }); }
     catch (e) { toast(e.message); }
     renderIssues(); render();
@@ -709,6 +711,20 @@ export async function openEditor(root, id, crumbs) {
   addEventListener("keydown", onKey);
   addEventListener("keyup", onKeyUp);
 
+  async function usdbDialog() {
+    await save();
+    const dlg = document.getElementById("usdb-dialog"), ta = dlg.querySelector("textarea");
+    try { ta.value = await api(`/api/songs/${id}/usdb`); } catch (e) { return toast(e.message); }
+    document.getElementById("usdb-copy").onclick = async () => {
+      try { await navigator.clipboard.writeText(ta.value); toast("Copied"); } catch { ta.select(); toast("Press Ctrl+C to copy"); }
+    };
+    document.getElementById("usdb-save").onclick = () => {
+      const a = h("a", { href: URL.createObjectURL(new Blob([ta.value], { type: "text/plain" })), download: `${info.artist} - ${info.title}.txt` });
+      document.body.append(a); a.click(); a.remove();
+    };
+    if (!/#VIDEO:v=/.test(ta.value)) toast("No YouTube link for this song – add it from a link to include one");
+    dlg.showModal();
+  }
   function help() {
     document.getElementById("help-grid").replaceChildren(...SHORTCUTS.flatMap(([k, d]) => [h("kbd", {}, k), h("span", {}, d)]));
     document.getElementById("help-dialog").showModal();

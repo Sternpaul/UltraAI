@@ -48,6 +48,12 @@ class Queue:
         for st in self.lib.all():  # resume after a restart
             if st.state == "processing" and not st.job.get("remote_id"):
                 self.lib.update(st.id, state="queued", stage="")
+            elif st.state not in ("processing", "downloading", "imported"):
+                try:  # songs from older versions: "Artist - Title" names, URL headers
+                    self.lib.rename_to_meta(st.id)
+                    self.lib.apply_media_headers(st.id)
+                except OSError as exc:
+                    log.warning("could not rename %s: %s", st.id, exc)
         for k in range(self.slots):
             threading.Thread(target=self._loop, daemon=True, name=f"queue-{k}").start()
 
@@ -242,7 +248,27 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     def edit_meta(sid: str, body: MetaIn):
         get_state(sid)
         kw = {k: v for k, v in body.model_dump().items() if v is not None}
-        return card(lib.update(sid, **kw))
+        st = lib.update(sid, **kw)
+        if "artist" in kw or "title" in kw:
+            try:
+                lib.rename_to_meta(sid)
+            except OSError as exc:
+                raise HTTPException(409, f"could not rename the song folder (file in use?): {exc}") from None
+            st = lib.state(sid)
+        return card(st)
+
+    @app.get("/api/songs/{sid}/usdb")
+    def usdb(sid: str):
+        """The txt ready for USDB (YouTube id in #VIDEO as USDB Syncer meta tag)."""
+        from fastapi.responses import PlainTextResponse
+
+        from .store import usdb_text
+
+        st = get_state(sid)
+        txt = lib.txt_path(sid)
+        if txt is None:
+            raise HTTPException(404, "song has not been processed yet")
+        return PlainTextResponse(usdb_text(txt.read_text(encoding="utf-8"), st.source))
 
     @app.post("/api/songs/{sid}/lyrics")
     def set_lyrics(sid: str, body: LyricsIn):
@@ -438,6 +464,10 @@ def open_window_or_browser(url: str) -> None:
     try:
         import webview
 
+        try:
+            webview.settings["ALLOW_DOWNLOADS"] = True  # "Save as file…" in the app window
+        except Exception:  # noqa: BLE001 - older pywebview
+            pass
         webview.create_window("UltraAI Studio", url, width=1400, height=900, min_size=(900, 600))
         webview.start()
     except Exception:  # noqa: BLE001 - no WebView2 / no GUI toolkit: use the browser
