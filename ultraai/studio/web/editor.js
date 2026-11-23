@@ -7,7 +7,7 @@ import {
 import { PRESETS, applyPreset } from "./golden.js";
 import { lyricIssues } from "./lyricsdiff.js";
 import { pitchIssues } from "./pitchcheck.js";
-import { findRepeats, propagate, spanOf } from "./repeats.js";
+import { findRepeats, propagate, retimeOnto, spanOf } from "./repeats.js";
 import { drawPreview } from "./preview.js";
 import { Timeline, drawOverview } from "./timeline.js";
 
@@ -341,11 +341,8 @@ export async function openEditor(root, id, crumbs) {
     const label = PRESETS.find(p => p[0] === preset)?.[1] ?? preset;
     toast(preset === "none" ? "Golden notes removed" : `Golden notes: ${label} – ${n} syllable${n === 1 ? "" : "s"}`);
   }
-  /** Notes of ``src`` placed at ``dst``'s own start (overwrites its notes and syllables). */
-  function overwriteLine(src, dst) {
-    const shift = lineStart(dst) - lineStart(src);
-    dst.notes = JSON.parse(JSON.stringify(src.notes)).map(n => ({ ...n, start: n.start + shift, end: n.end + shift }));
-  }
+  /** Syllables, pitches and kinds of ``src`` onto ``dst``, keeping ``dst``'s own (sung) word timing. */
+  function overwriteLine(src, dst) { dst.notes = retimeOnto(src.notes, dst.notes); }
   function copyRepeats() {
     const li = currentLineIndex(), line = ed.lines[li];
     if (!line) return;
@@ -361,7 +358,7 @@ export async function openEditor(root, id, crumbs) {
     }
     if (differ.length && confirm(`${differ.length} repeat${differ.length === 1 ? " has" : "s have"} a different number of notes ` +
         `or other syllables.\n\nOverwrite ${differ.length === 1 ? "its" : "their"} notes and syllables with this line's? ` +
-        "Each keeps its own start time. (Undo with Ctrl+Z.)")) {
+        "The timing stays the repeat's own: each word keeps where it is sung there. (Undo with Ctrl+Z.)")) {
       for (const o of differ) overwriteLine(line, o);
       done += differ.length;
       differ.length = 0;
@@ -538,7 +535,7 @@ export async function openEditor(root, id, crumbs) {
     remember();
     if (!copyLineNotes(src, dst)) {
       if (!confirm("This repeat has a different number of notes.\n\nOverwrite its notes and syllables with the other repeat's? " +
-          "It keeps its own start time. (Undo with Ctrl+Z.)")) { undo.pop(); updateUndo(); return; }
+          "Its timing stays its own: each word keeps where it is sung there. (Undo with Ctrl+Z.)")) { undo.pop(); updateUndo(); return; }
       overwriteLine(src, dst);
     }
     changed(false);

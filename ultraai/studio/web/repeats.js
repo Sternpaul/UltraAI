@@ -74,13 +74,12 @@ export function findRepeats(lines, near = 0.8) {
   return { groups, byLine, sections: kept };
 }
 
-const clone = ln => JSON.parse(JSON.stringify(ln));
 
 /**
  * After an edit: apply what changed in each edited line to the other lines of its group.
  * Same number of notes -> the same changes per note (time shift, length, pitch step, kind,
  * syllable).  Different number (split/merge/new note) in an exactly repeated line -> the
- * edited line's notes are copied, placed at the other occurrence's own start.
+ * edited line's notes are copied word by word onto where that repeat sings each word.
  * Returns {applied, skipped}.
  */
 export function propagate(prevLines, lines, rep) {
@@ -108,8 +107,7 @@ export function propagate(prevLines, lines, rep) {
         });
         applied++;
       } else if (g.exact && other.notes.length) {
-        const shift = lineStart(other) - lineStart(before);
-        other.notes = clone(after).notes.map(n => ({ ...n, start: n.start + shift, end: n.end + shift }));
+        other.notes = retimeOnto(after.notes, other.notes);  // keeps the repeat's own word timing
         applied++;
       } else {
         skipped++;
@@ -122,4 +120,37 @@ export function propagate(prevLines, lines, rep) {
 
 export function spanOf(lines, i, len = 1) {
   return [lineStart(lines[i]), lineEnd(lines[i + len - 1] ?? lines[i])];
+}
+
+function wordsOf(notes) {  // [[note, ...], ...]: a word ends where a note's text ends with a space
+  const out = [];
+  let cur = null;
+  for (const n of notes) {
+    const cont = n.text.trim().startsWith("~");
+    if (!cur || (!cont && /^\s/.test(n.text))) { cur = []; out.push(cur); }
+    cur.push(n);
+    if (/\s$/.test(n.text)) cur = null;
+  }
+  return out;
+}
+
+/**
+ * Notes of ``src`` (syllables, pitches, kinds) onto a repeat whose own (aligned) notes are
+ * ``dstOld``, keeping the repeat's own timing: word by word, the template's notes are spread
+ * over where that repeat sings the word (the copy's word spans come from the aligner, which
+ * listened to that repeat).  Different word count: stretched over the repeat's whole span.
+ */
+export function retimeOnto(src, dstOld) {
+  const out = JSON.parse(JSON.stringify(src));
+  const ws = wordsOf(out), wd = wordsOf(dstOld);
+  const place = (notes, a, b) => {
+    const s0 = notes[0].start, s1 = notes[notes.length - 1].end, f = (b - a) / Math.max(1e-3, s1 - s0);
+    for (const n of notes) { n.start = a + (n.start - s0) * f; n.end = a + (n.end - s0) * f; }
+  };
+  if (ws.length === wd.length && ws.length) {
+    ws.forEach((w, k) => place(w, wd[k][0].start, wd[k][wd[k].length - 1].end));
+  } else if (out.length && dstOld.length) {
+    place(out, dstOld[0].start, dstOld[dstOld.length - 1].end);
+  }
+  return out;
 }
