@@ -51,8 +51,10 @@ function library() {
     e.preventDefault();
     const url = urlIn.value.trim();
     if (!url) return;
+    const options = await processDialog("Add song – processing options");
+    if (!options) return;
     try {
-      await api("/api/songs/url", { method: "POST", json: { url } });
+      await api("/api/songs/url", { method: "POST", json: { url, options } });
       urlIn.value = "";
       toast("Downloading…");
       load();
@@ -124,7 +126,9 @@ function library() {
   }
 
   async function reprocess(s) {
-    try { await api(`/api/songs/${s.id}/process`, { method: "POST" }); toast("Queued"); load(); }
+    const options = await processDialog(`Process again – ${s.title}`, s.options || null);
+    if (!options) return;
+    try { await api(`/api/songs/${s.id}/process`, { method: "POST", json: { options } }); toast("Queued"); load(); }
     catch (e) { toast(e.message); }
   }
   async function getExtras(s) {
@@ -207,8 +211,11 @@ function sessionStorageSet(k, v) { try { sessionStorage.setItem(`ultraai.${k}`, 
 async function upload(files) {
   files = files.filter(f => f.type.startsWith("audio/") || f.type.startsWith("video/") || /\.(mp3|m4a|ogg|opus|flac|wav|aac|webm)$/i.test(f.name));
   if (!files.length) return toast("No audio files in the selection");
+  const options = await processDialog(`Add ${files.length} song${files.length > 1 ? "s" : ""} – processing options`);
+  if (!options) return;
   const form = new FormData();
   for (const f of files) form.append("files", f);
+  form.append("options", JSON.stringify(options));
   toast(`Uploading ${files.length} file${files.length > 1 ? "s" : ""}…`, 10000);
   try {
     await api("/api/songs/files", { method: "POST", form });
@@ -227,6 +234,72 @@ addEventListener("drop", e => {
   e.preventDefault(); dragDepth = 0; overlay.hidden = true;
   upload([...e.dataTransfer.files]);
 });
+
+// ------------------------------------------------------------------ processing options
+let modelsCache = null;
+const SONG_S = 210;   // estimate for a 3½-minute song
+const FIXED_RATE = 0.5 + 0.35 + 0.12;   // analysis, listening, aligning (s per s of audio)
+
+/** Ask how to process: resolves to the options object, or null when cancelled. */
+export async function processDialog(title = "Processing options", start = null) {
+  const [models, settings] = await Promise.all([modelsCache ?? api("/api/models"), api("/api/settings")]);
+  modelsCache = models;
+  const o = { separation: "htdemucs", pitch: "swift", pitch_check: [], sep_check: [], lead: "", notes: "singer",
+    ...(settings.defaults || {}), ...(start || {}) };
+  const dlg = document.getElementById("process-dialog"), box = document.getElementById("process-opts");
+  document.getElementById("process-title").textContent = title;
+  const radio = (group, key, legend) => h("fieldset", {}, h("legend", {}, legend),
+    ...models[group].map(m => h("label", { class: "row" },
+      h("input", { type: "radio", name: key, value: m.key, checked: o[key] === m.key, onchange: () => { o[key] = m.key; refresh(); } }),
+      h("span", {}, m.name, m.by ? h("span", { class: "muted" }, ` · ${m.by}`) : null,
+        m.note ? h("div", { class: "muted" }, m.note + (m.rate ? ` · ${costText(m.rate)}` : "")) : null))));
+  const checks = (group, key, mainKey, legend) => h("fieldset", { dataset: { group } }, h("legend", {}, legend),
+    ...models[group].map(m => h("label", { class: "row" },
+      h("input", { type: "checkbox", name: key, value: m.key, checked: o[key].includes(m.key),
+        onchange: e => { o[key] = e.target.checked ? [...o[key], m.key] : o[key].filter(x => x !== m.key); refresh(); } }),
+      h("span", {}, m.name, h("div", { class: "muted" }, costText(m.rate))))));
+  box.replaceChildren(
+    radio("separation", "separation", "Vocal separation"),
+    radio("pitch", "pitch", "Pitch model"),
+    checks("separation", "sep_check", "separation", "Double-check with these separations"),
+    checks("pitch", "pitch_check", "pitch", "Double-check with these pitch models"),
+    radio("lead", "lead", "Backing vocals"),
+    radio("notes", "notes", "Notes"),
+  );
+  const eta = document.getElementById("process-eta");
+  function refresh() {
+    // the main model is not offered as its own double-check
+    for (const [group, key, main] of [["separation", "sep_check", "separation"], ["pitch", "pitch_check", "pitch"]]) {
+      for (const inp of box.querySelectorAll(`input[name=${key}]`)) {
+        const isMain = inp.value === o[main];
+        inp.disabled = isMain;
+        if (isMain) { inp.checked = false; o[key] = o[key].filter(x => x !== inp.value); }
+      }
+      void group;
+    }
+    const rate = (k, g) => models[g].find(m => m.key === k)?.rate ?? 0;
+    let r = FIXED_RATE + rate(o.separation, "separation") + rate(o.pitch, "pitch") + rate(o.lead, "lead");
+    r += o.sep_check.reduce((s, k) => s + rate(k, "separation") + rate(o.pitch, "pitch"), 0);
+    r += o.pitch_check.reduce((s, k) => s + rate(k, "pitch"), 0);
+    eta.textContent = `About ${Math.max(1, Math.round(r * SONG_S / 60))} min for a 3½-minute song on a CPU without a GPU – ` +
+      "much faster with a GPU. Steps already done for a song are reused.";
+  }
+  refresh();
+  dlg.querySelector("[name=remember]").checked = false;
+  dlg.returnValue = "";
+  dlg.showModal();
+  return new Promise(resolve => dlg.addEventListener("close", async () => {
+    if (dlg.returnValue !== "start") return resolve(null);
+    if (dlg.querySelector("[name=remember]").checked) {
+      try { await api("/api/settings/defaults", { method: "POST", json: { options: o } }); } catch { /* keep going */ }
+    }
+    resolve(o);
+  }, { once: true }));
+}
+function costText(rate) {
+  const min = rate * SONG_S / 60;
+  return min < 0.5 ? "seconds" : `+${Math.round(min) || 1} min`;
+}
 
 // ------------------------------------------------------------------ song info dialog
 function infoDialog(s, after) {

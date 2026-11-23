@@ -56,6 +56,7 @@ class SongState:
     issues: int = 0                     # open issues (after dismissals)
     dismissed: list[str] = field(default_factory=list)  # issue keys the user marked OK
     lyrics_source: str = ""
+    options: dict = field(default_factory=dict)  # processing options chosen for this song
     lyrics_info: dict = field(default_factory=dict)  # which lyrics were used (see worker.lyrics_summary)
     progress: dict = field(default_factory=dict)  # live processing steps / ETA from the processor
     video: str = ""                     # file name of the music video (USDX #VIDEO), if any

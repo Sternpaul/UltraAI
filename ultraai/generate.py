@@ -77,8 +77,20 @@ MIN_MELISMA_SYL_S = 0.3
 MAX_SEGMENTS = int(__import__("os").environ.get("ULTRAAI_MAXSEG", 6))
 
 
-def _segments(p: PitchTrack, start: float, end: float) -> list[tuple[float, float, int]]:
-    """Split [start, end) into stable-pitch regions (semitone runs >= MIN_SEG_S)."""
+NOTE_STYLES = {           # min note length within a syllable, min pitch step between its notes
+    "singer": (MIN_SEG_S, 1),   # follow the voice
+    "easier": (0.3, 3),         # only clear, held changes become extra notes
+    "easiest": None,            # one note per syllable
+}
+
+
+def note_style() -> tuple[float, int] | None:
+    return NOTE_STYLES.get(__import__("os").environ.get("ULTRAAI_NOTES", "singer"), NOTE_STYLES["singer"])
+
+
+def _segments(p: PitchTrack, start: float, end: float, min_seg_s: float | None = None,
+              min_step: int = 1) -> list[tuple[float, float, int]]:
+    """Split [start, end) into stable-pitch regions (semitone runs >= ``min_seg_s``)."""
     from scipy.ndimage import median_filter
 
     a, b = p.index(start), p.index(end)
@@ -107,7 +119,7 @@ def _segments(p: PitchTrack, start: float, end: float) -> list[tuple[float, floa
             runs[-1][2] = i
         else:
             runs.append([v, i, i])
-    min_frames = max(1, int(MIN_SEG_S / p.frame))
+    min_frames = max(1, int((min_seg_s or MIN_SEG_S) / p.frame))
     # absorb short runs into the longer neighbour until all are long enough and, for long
     # wobbly notes ("whoooah"), until at most MAX_SEGMENTS remain (the main steps survive)
     while len(runs) > 1:
@@ -131,6 +143,14 @@ def _segments(p: PitchTrack, start: float, end: float) -> list[tuple[float, floa
             else:
                 merged.append(r)
         runs = merged
+    while min_step > 1 and len(runs) > 1:  # easier songs: small steps are not worth a note
+        diffs = [abs(runs[k + 1][0] - runs[k][0]) for k in range(len(runs) - 1)]
+        k = int(np.argmin(diffs))
+        if diffs[k] >= min_step:
+            break
+        a_, b_ = runs[k], runs[k + 1]
+        keep = a_ if (a_[2] - a_[1]) >= (b_[2] - b_[1]) else b_
+        runs[k:k + 2] = [[keep[0], a_[1], b_[2]]]
     out = []
     for k, (pitch, i0, i1) in enumerate(runs):
         t0 = start if k == 0 else float(p.times[a + i0])
@@ -160,8 +180,9 @@ def build_syllables(lyrics: Lyrics, words: list[aligner.AlignedWord], p: PitchTr
         seg = p.midi[a:b][vmask[a:b]]
         s.stability = float(np.subtract(*np.percentile(seg, [75, 25]))) if len(seg) >= 4 else 99.0
         s.pitch = prev = _pitch(p, s.start, s.end, prev)
-        if MELISMA and s.end - s.start >= MIN_MELISMA_SYL_S:
-            seg = _segments(p, s.start, s.end)
+        style = note_style()
+        if MELISMA and style is not None and s.end - s.start >= MIN_MELISMA_SYL_S:
+            seg = _segments(p, s.start, s.end, *style)
             if len(seg) > 1:
                 s.segments = seg
     return syl
@@ -523,15 +544,19 @@ def analyse(audio: Path, separation: str = DEFAULT_SEPARATION, lead: str | None 
     else:
         em = aligner.emissions(wave)
         torch.save(em, em_cache)
-    pitch_cache = vocals.with_suffix(".pitch.npz")
+    p = pitch_track(vocals, wave, os.environ.get("ULTRAAI_PITCH", "swift"))
+    return Analysis(vocals, wave, em, p)
+
+
+def pitch_track(vocals: Path, wave, model: str = "swift") -> PitchTrack:
+    """Pitch of the vocals with ``model`` (see pitch.py), cached next to them."""
+    pitch_cache = vocals.with_suffix(".pitch.npz" if model == "swift" else f".pitch-{model}.npz")
     if pitch_cache.exists():
         z = np.load(pitch_cache)
-        p = PitchTrack(z["times"], z["midi"], z["confidence"], z["loudness_db"])
-    else:
-        p = track(wave)
-        np.savez(pitch_cache, times=p.times, midi=p.midi, confidence=p.confidence,
-                 loudness_db=p.loudness_db)
-    return Analysis(vocals, wave, em, p)
+        return PitchTrack(z["times"], z["midi"], z["confidence"], z["loudness_db"])
+    p = track(wave, model)
+    np.savez(pitch_cache, times=p.times, midi=p.midi, confidence=p.confidence, loudness_db=p.loudness_db)
+    return p
 
 
 def is_cached(audio: Path, separation: str = DEFAULT_SEPARATION) -> bool:
@@ -741,6 +766,93 @@ def _merge_lrc_times(lines, asr_times: list[float], lrc_times: list[float]) -> l
     return out
 
 
+def _syl_pitch(p: PitchTrack, s: Syllable) -> float | None:
+    a, b = p.index(s.start), max(p.index(s.end), p.index(s.start) + 1)
+    seg = p.midi[a:b][p.voiced()[a:b]]
+    return float(np.median(seg)) if len(seg) >= 3 else None
+
+
+def _rms_db(wave, s: Syllable) -> float:
+    seg = wave[int(s.start * 16000): int(s.end * 16000)]
+    return 20 * float(np.log10(np.sqrt(np.mean(seg ** 2)) + 1e-9)) if len(seg) else -120.0
+
+
+def _models(env: str) -> list[str]:
+    import os
+
+    return [m.strip() for m in os.environ.get(env, "").split(",") if m.strip()]
+
+
+def _pitch_name(m: str) -> str:
+    from .pitch import PITCH_MODELS
+
+    return PITCH_MODELS.get(m, m)
+
+
+def double_check_issues(audio: Path, separation: str, syl: list[Syllable], a) -> list[dict]:
+    """Second (third, ...) opinions, all optional (worker options):
+    ULTRAAI_PITCH_CHECK=m1,m2,...: more pitch models - syllables where any of them disagrees
+      with the main model by 2+ semitones (octave ignored) are marked;
+    ULTRAAI_SEP_CHECK=m1,m2,...: more vocal separations - syllables that are clearly sung in
+      one separation but (nearly) silent or on another pitch in another are marked (backing
+      vocals, instruments or noise that one model let through)."""
+    import os
+
+    from .audio import SEPARATION_NAMES
+
+    main_pitch = os.environ.get("ULTRAAI_PITCH", "swift")
+    out = []
+    checks = [m for m in _models("ULTRAAI_PITCH_CHECK") + _models("ULTRAAI_PITCH2") if m != main_pitch]
+    others = {m: pitch_track(a.vocals, a.wave, m) for m in dict.fromkeys(checks)}
+    if others:
+        for s in syl:
+            x = _syl_pitch(a.pitch, s)
+            if x is None:
+                continue
+            off = {m: abs(_fold(y, x) - x) for m, p2 in others.items() if (y := _syl_pitch(p2, s)) is not None}
+            bad = {m: d for m, d in off.items() if d >= 2}
+            if bad:
+                d = max(bad.values())
+                who = ", ".join(f"{_pitch_name(m)} {round(v)}" for m, v in bad.items())
+                out.append(_note_issue("models_pitch", s, 0.6 + min(0.25, 0.05 * (d - 2)) + 0.05 * (len(bad) - 1),
+                                       f"pitch models disagree with {_pitch_name(main_pitch)} – semitones off: {who}"))
+    seps = [m for m in _models("ULTRAAI_SEP_CHECK") + _models("ULTRAAI_SEP2") if m != separation]
+    for s2 in dict.fromkeys(seps):
+        v2, _ = separate(audio, s2, need_instrumental=False)
+        w2 = load_mono(v2, aligner.SR)
+        p2 = pitch_track(v2, w2, main_pitch)
+        name = SEPARATION_NAMES.get(s2, s2)
+        for s in syl:
+            e1, e2 = _rms_db(a.wave, s), _rms_db(w2, s)
+            if max(e1, e2) > -40 and abs(e1 - e2) >= 15:
+                out.append(_note_issue("models_sep", s, 0.7, f"{name} {'hears' if e2 > e1 else 'does not hear'} singing "
+                                       f"here ({round(abs(e1 - e2))} dB difference) – backing vocals or noise?"))
+                continue
+            x, y = _syl_pitch(a.pitch, s), _syl_pitch(p2, s)
+            if x is not None and y is not None and abs(_fold(y, x) - x) >= 2:
+                out.append(_note_issue("models_sep", s, 0.6, f"the vocals from {name} have another pitch here"))
+    return _merge_note_issues(out)
+
+
+def _note_issue(kind: str, s: Syllable, risk: float, why: str) -> dict:
+    return {"kind": kind, "line": s.line, "start": round(s.start, 3), "end": round(s.end, 3),
+            "risk": round(risk, 3), "text": s.text.strip(), "reasons": [why]}
+
+
+def _merge_note_issues(issues: list[dict]) -> list[dict]:
+    """Neighbouring syllables with the same finding become one issue."""
+    out: list[dict] = []
+    for i in sorted(issues, key=lambda x: (x["kind"], x["start"])):
+        last = out[-1] if out else None
+        if last and last["kind"] == i["kind"] and last["line"] == i["line"] and i["start"] - last["end"] < 0.6:
+            last["end"] = i["end"]
+            last["text"] += " " + i["text"]
+            last["risk"] = max(last["risk"], i["risk"])
+            continue
+        out.append(dict(i))
+    return out
+
+
 def _repeat_issues(proposals) -> list[dict]:
     """Repeats sung (or detected) differently from the others: ask the user."""
     out = []
@@ -832,6 +944,7 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
     info["lines"] = line_report(syl)
     info["low_confidence_lines"] = sum(r["review"] for r in info["lines"])
     _add_issues(info, syl, free, expected, asr_words, line_flags, lyrics, a.pitch)
+    info["issues"] += double_check_issues(audio, separation, syl, a)
     info["issues"] = sorted(info["issues"] + _repeat_issues(proposals), key=lambda i: -i["risk"])
     grid = None
     if os.environ.get("ULTRAAI_TEMPO", "1") == "1":

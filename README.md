@@ -19,6 +19,13 @@ and run it (per-user install, no admin rights; Windows may warn about an unknown
 2. **Add songs**: paste a YouTube link, use *Add files…*, or drop audio files on the window.
    Processing runs on the server (about 10 minutes per new song); the song list shows
    each step with an ETA – click *steps* for details.
+   Before processing, a small window asks how: vocal separation model (HTDemucs, HTDemucs
+   fine-tuned, MelBand RoFormer), pitch model (SwiftF0, PESTO, CREPE tiny/full), any number of
+   extra separation and pitch models as a **double check** (where they disagree becomes an
+   issue), optional removal of backing vocals, and the note style (*like the singer*,
+   *easier*: only clear pitch changes become extra notes, *easiest*: one note per syllable).
+   *Use these as my defaults* remembers the choice. The window estimates the time; a server
+   with a CUDA GPU runs all model steps much faster (install a CUDA build of PyTorch there).
 3. **Review**: songs marked *Needs review* open in the editor at the first uncertain spot.
 4. Songs without lyrics online get *Add lyrics* (prefilled with what speech recognition heard).
 

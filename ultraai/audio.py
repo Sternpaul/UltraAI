@@ -25,6 +25,9 @@ SEPARATION_MODELS = {
     "bsroformer": "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
 }
 DEFAULT_SEPARATION = "melband"
+SEPARATION_NAMES = {"htdemucs": "HTDemucs", "htdemucs_ft": "HTDemucs fine-tuned",
+                    "melband": "MelBand RoFormer"}
+LEAD_NAMES = {"kara2": "UVR MDX Karaoke 2", "melkara": "MelBand RoFormer Karaoke"}
 
 
 def file_hash(path: Path, chunk: int = 1 << 20) -> str:

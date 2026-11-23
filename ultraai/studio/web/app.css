@@ -70,6 +70,13 @@ dialog label.row { flex-direction: row; align-items: center; gap: 8px; }
 dialog fieldset { border: 1px solid var(--line); border-radius: var(--radius); display: flex; flex-direction: column; gap: 8px; }
 dialog textarea { width: 100%; font-family: ui-monospace, Consolas, monospace; resize: vertical; }
 .actions { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+#process-dialog { width: min(760px, calc(100vw - 32px)); }
+.optgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+.optgrid fieldset { margin: 0; padding: 6px 10px 8px; gap: 2px; }
+.optgrid label.row { font-size: 13.5px; align-items: flex-start; }
+.optgrid label.row .muted { font-size: 12px; }
+.optgrid label.row input { margin-top: 3px; }
+@media (width < 700px) { .optgrid { grid-template-columns: 1fr; } }
 .help-grid { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; max-height: 60vh; overflow: auto; }
 
 #drop-overlay {

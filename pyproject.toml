@@ -1,6 +1,6 @@
 [project]
 name = "ultraai"
-version = "0.1.8"
+version = "0.1.9"
 description = "Lyrics-first UltraStar karaoke file generator"
 requires-python = ">=3.11"
 # base = what the Studio (Studio machine app) needs; the processing worker adds [worker]
@@ -21,6 +21,7 @@ worker = [
   "faster-whisper",           # what is actually sung (structure check)
   "uroman",                   # romanization of any script for the aligner
   "scikit-learn",             # issue risk model
+  "torchcrepe", "pesto-pitch",  # optional pitch models (main or double-check)
 ]
 dev = ["pytest", "httpx"]
 
