@@ -12,6 +12,7 @@
   <a href="#/" class="brand">UltraAI <span>Studio</span></a>
   <nav id="crumbs" aria-label="Location"></nav>
   <div class="spacer"></div>
+  <a href="#/log" class="ghost button-like">Log</a>
   <button type="button" id="open-settings" class="ghost">Settings</button>
 </header>
 <main id="view" tabindex="-1"></main>
@@ -30,13 +31,18 @@
       <label>SSH host <input name="ssh_host" placeholder="user@server or a Host from ~/.ssh/config"></label>
       <label>SSH port <input name="ssh_port" type="number" min="0" max="65535" placeholder="22"></label>
       <label>UltraAI folder on the server <input name="remote_dir" placeholder="UltraAI"></label>
+      <label>Vocal separation
+        <select name="separation">
+          <option value="htdemucs">Standard – about 5 min per song (all accuracy numbers use this)</option>
+          <option value="melband">Cleaner vocals – about 20–30 min per song, not yet measured</option>
+        </select></label>
     </fieldset>
     <fieldset>
       <legend>YouTube downloads</legend>
       <label>Audio
         <select name="youtube_audio">
-          <option value="m4a">AAC / M4A (~128 kbit/s) – plays in every USDX version</option>
-          <option value="best">Best available (usually Opus ~130–160 kbit/s, WebM)</option>
+          <option value="best">Best available (usually Opus ~130–160 kbit/s, saved as .ogg without re-encoding)</option>
+          <option value="m4a">AAC / M4A (~128 kbit/s)</option>
         </select></label>
       <label>Music video (shown behind the lyrics in USDX)
         <select name="youtube_video">
@@ -49,6 +55,14 @@
       <p class="muted">YouTube's best free audio is about 130–160 kbit/s whatever you pick; AAC and Opus sound
         nearly the same there. Videos are downloaded as H.264 where possible (plays everywhere).</p>
     </fieldset>
+    <label>Log detail
+      <select name="log_level">
+        <option value="error">Errors only</option>
+        <option value="warning">Warnings</option>
+        <option value="info">Normal</option>
+        <option value="debug">Debug</option>
+        <option value="trace">Everything (every request, SSH command and download message)</option>
+      </select></label>
     <p class="muted" id="settings-test-result"></p>
     <div class="actions">
       <button type="button" id="settings-test" class="ghost">Test connection</button>
@@ -84,6 +98,16 @@
       <button value="cancel" formnovalidate class="ghost">Cancel</button>
       <button value="save" class="primary">Apply</button>
     </div>
+  </form>
+</dialog>
+
+<dialog id="steps-dialog" aria-labelledby="steps-title">
+  <form method="dialog">
+    <h2 id="steps-title">Processing</h2>
+    <ol class="steps" id="steps-list"></ol>
+    <p class="muted" id="steps-eta"></p>
+    <details id="steps-log"><summary>Server log of this song</summary><pre class="logpre"></pre></details>
+    <div class="actions"><span class="spacer"></span><button class="primary">Close</button></div>
   </form>
 </dialog>
 

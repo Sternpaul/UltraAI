@@ -20,21 +20,41 @@ import time
 import uuid
 from pathlib import Path
 
+import logging
+
+from .logs import TRACE
 from .store import Library
 
+log = logging.getLogger("ultraai.processor")
+server_log = logging.getLogger("ultraai.server")
 FINAL = ("done", "needs_lyrics", "error")
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW: no console flashing
 
 
 def _run(argv: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, capture_output=True, text=True, creationflags=_NO_WINDOW, **kw)
+    log.log(TRACE, "run %s", " ".join(shlex.quote(a) for a in argv))
+    t = time.time()
+    r = subprocess.run(argv, capture_output=True, text=True, creationflags=_NO_WINDOW, **kw)
+    log.log(TRACE, "-> exit %s in %.1f s%s%s", r.returncode, time.time() - t,
+            f"\n{r.stdout.strip()}" if r.stdout.strip() else "", f"\n{r.stderr.strip()}" if r.stderr.strip() else "")
+    return r
+
+
+def progress_dict(server: dict | None, upload: str = "done", download: str = "pending") -> dict:
+    """Server status + the Studio's own steps (upload before, download after)."""
+    server = dict(server or {})
+    stages = [{"key": "upload", "label": "Uploading the audio to the server", "state": upload}]
+    stages += server.get("stages") or []
+    stages.append({"key": "download", "label": "Downloading the results", "state": download})
+    server["stages"] = stages
+    return server
 
 
 class Processor:
     """Base: job preparation and result ingestion shared by local and remote processing."""
 
-    def __init__(self, lib: Library, log=print, separation: str | None = None):
-        self.lib, self.log, self.separation = lib, log, separation
+    def __init__(self, lib: Library, log=None, separation: str | None = None):
+        self.lib, self.separation = lib, separation
 
     def job_spec(self, sid: str, job_id: str) -> dict:
         st = self.lib.state(sid)
@@ -53,6 +73,13 @@ class Processor:
     def ingest(self, sid: str, out: Path, status: dict) -> str:
         """Copy a finished job's results into the song folder; returns the new state."""
         sd = self.lib.studio_dir(sid)
+        wl = out / "worker.log"
+        if wl.exists():  # the server's own log of this job, into ours
+            shutil.copy2(wl, sd / "worker.log")
+            for line in wl.read_text(encoding="utf-8", errors="replace").splitlines():
+                lvl = logging.ERROR if " ERROR " in line else logging.WARNING if " WARNING " in line else logging.DEBUG
+                server_log.log(lvl, line)
+        log.info("results for %s: %s", sid, status.get("state"))
         for name in ("editor.json", "vocals.ogg"):
             if (out / name).exists():
                 shutil.copy2(out / name, sd / name)
@@ -100,21 +127,20 @@ class LocalProcessor(Processor):
         spec = self.job_spec(sid, uuid.uuid4().hex[:12])
         shutil.copy2(self.lib.folder(sid) / self.lib.state(sid).audio, job / spec["audio"])
         (job / "job.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+        errf = open(job / "stderr.txt", "w", encoding="utf-8")  # noqa: SIM115 - a file, never a full pipe
         proc = subprocess.Popen([sys.executable, "-m", "ultraai.cli", "process", str(job)],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-                                creationflags=_NO_WINDOW)
+                                stdout=subprocess.DEVNULL, stderr=errf, text=True, creationflags=_NO_WINDOW)
         from ..worker import read_status
 
-        last = None
         while proc.poll() is None:
-            st = read_status(job)
-            if stage and st.get("stage") != last:
-                stage(st.get("stage", ""))
-                last = st.get("stage")
-            time.sleep(1.0)
+            if stage:
+                stage(progress_dict(read_status(job), upload="skipped", download="skipped"))
+            time.sleep(2.0)
+        errf.close()
         st = read_status(job)
         if st.get("state") not in FINAL:
-            st = {"state": "error", "error": (proc.stderr.read() if proc.stderr else "")[-500:] or "worker crashed"}
+            st = {"state": "error",
+                  "error": (job / "stderr.txt").read_text(encoding="utf-8", errors="replace")[-500:] or "worker crashed"}
         state = self.ingest(sid, job / "out", st)
         shutil.rmtree(job, ignore_errors=True)
         return state
@@ -212,7 +238,8 @@ class SshProcessor(Processor):
             job_id = uuid.uuid4().hex[:12]
             jd = f"{self.dir}/jobs/{job_id}"
             spec = self.job_spec(sid, job_id)
-            stage and stage("uploading")
+            stage and stage(progress_dict({"stage": "Uploading the audio"}, upload="running"))
+            log.info("uploading %s as job %s", st.audio, job_id)
             self.t.run(f"mkdir -p {shlex.quote(jd)}")
             with tempfile.TemporaryDirectory() as tmp:
                 jf = Path(tmp) / "job.json"
@@ -223,9 +250,15 @@ class SshProcessor(Processor):
             self.lib.update(sid, job={"remote_id": job_id, "started": time.time()})
         status = self._follow(jd, stage)
         with tempfile.TemporaryDirectory() as tmp:
-            if status.get("state") in ("done", "needs_lyrics"):
-                stage and stage("downloading results")
+            stage and stage(progress_dict({**status, "stage": "Downloading the results", "eta": 5},
+                                          download="running"))
+            try:
                 self.t.get_dir(f"{jd}/out", Path(tmp))
+            except RuntimeError as exc:
+                if status.get("state") in ("done", "needs_lyrics"):
+                    raise
+                log.warning("could not fetch the server log: %s", exc)
+            (Path(tmp) / "out").mkdir(exist_ok=True)
             state = self.ingest(sid, Path(tmp) / "out", status)
         try:
             self.t.run(f"rm -rf {shlex.quote(jd)}")
@@ -246,12 +279,13 @@ class SshProcessor(Processor):
                     except ValueError:
                         continue
                     failures = 0
-                    if stage and last.get("stage"):
-                        stage(last["stage"])
+                    log.log(TRACE, "status %s", line.strip())
+                    if stage:
+                        stage(progress_dict(last))
                     if last.get("state") in FINAL:
                         return last
             except (ConnectionError, OSError, RuntimeError) as exc:
-                self.log(f"lost connection to the server ({exc}); retrying")
+                log.warning("lost connection to the server (%s); retrying", exc)
             failures += 1
             if last.get("state") in FINAL:
                 return last

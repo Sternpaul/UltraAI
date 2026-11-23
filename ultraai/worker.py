@@ -72,20 +72,153 @@ def lyrics_candidates(text: str, artist: str, title: str):
     return [LrcResult(artist, title, 0.0, lines, plain)]
 
 
+# ------------------------------------------------------------------ progress
+STAGES = [("separate", "Separating vocals"), ("analyse", "Analysing the vocals (pitch, sounds)"),
+          ("lyrics", "Looking up lyrics"), ("listen", "Listening (speech recognition)"),
+          ("align", "Aligning lyrics and notes")]
+# seconds of work per second of audio on a small CPU server (learned per machine, see Progress)
+PRIOR_RATE = {"separate:htdemucs": 1.6, "separate:melband": 6.0, "analyse": 0.5, "lyrics": 0.01,
+              "listen": 0.35, "align": 0.12}
+RATES_FILE = CACHE_DIR / "stage_rates.json"
+_current: "Progress | None" = None
+
+
+class Progress:
+    """Stage list with timing; status.json is rewritten every few seconds with elapsed time,
+    the current stage's estimated fraction and the remaining time (ETA), so the Studio can
+    draw a progress bar without depending on the server's clock."""
+
+    def __init__(self, job: Path, duration: float, separation: str):
+        import threading
+
+        self.job, self.duration, self.sep = job, max(30.0, duration), separation
+        try:
+            self.rates = {**PRIOR_RATE, **json.loads(RATES_FILE.read_text())}
+        except (OSError, ValueError):
+            self.rates = dict(PRIOR_RATE)
+        self.stages = [{"key": k, "label": lbl, "state": "pending", "seconds": 0.0,
+                        "expected": round(self._rate(k) * self.duration, 1)} for k, lbl in STAGES]
+        self.cur: dict | None = None
+        self.t_cur = 0.0
+        self.t0 = time.time()
+        self.lock = threading.Lock()
+        self.alive = True
+        threading.Thread(target=self._beat, daemon=True).start()
+
+    def _rate(self, key: str) -> float:
+        k = f"{key}:{self.sep}" if key == "separate" else key
+        return float(self.rates.get(k, PRIOR_RATE.get(k, 0.5)))
+
+    def start(self, key: str) -> None:
+        with self.lock:
+            self._close()
+            self.cur = next(st for st in self.stages if st["key"] == key)
+            self.cur["state"] = "running"
+            self.t_cur = time.time()
+        log.info("stage %s", key)
+        self._write()
+
+    def skip(self, key: str, why: str = "") -> None:
+        with self.lock:
+            st = next(st for st in self.stages if st["key"] == key)
+            st.update(state="skipped", note=why)
+        self._write()
+
+    def _close(self) -> None:
+        if self.cur is None:
+            return
+        took = time.time() - self.t_cur
+        self.cur.update(state="done", seconds=round(took, 1))
+        if took > max(2.0, 0.25 * self.cur["expected"]):  # real work (not cached): learn this machine's speed
+            k = f"{self.cur['key']}:{self.sep}" if self.cur["key"] == "separate" else self.cur["key"]
+            self.rates[k] = round(0.7 * self._rate(self.cur["key"]) + 0.3 * took / self.duration, 4)
+            try:
+                RATES_FILE.write_text(json.dumps(self.rates))
+            except OSError:
+                pass
+        else:
+            self.cur["note"] = "cached"
+        self.cur = None
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            now = time.time()
+            frac, eta = None, 0.0
+            stages = [dict(st) for st in self.stages]
+            for st in stages:
+                if st["state"] == "running":
+                    el = now - self.t_cur
+                    st["seconds"] = round(el, 1)
+                    frac = min(0.97, el / max(1.0, st["expected"]))
+                    eta += max(st["expected"] - el, 0.1 * st["expected"])
+                elif st["state"] == "pending":
+                    eta += st["expected"]
+            return {"stages": stages, "frac": None if frac is None else round(frac, 3), "eta": round(eta),
+                    "elapsed": round(now - self.t0), "stage": self.cur["label"] if self.cur else ""}
+
+    def _write(self, state: str = "running", **kw) -> None:
+        write_status(self.job, state, **{**self.snapshot(), **kw})
+
+    def _beat(self) -> None:
+        while self.alive:
+            time.sleep(3.0)
+            if self.alive and self.cur is not None:
+                self._write()
+
+    def finish(self, state: str, **kw) -> None:
+        with self.lock:
+            self._close()
+            self.alive = False
+            for st in self.stages:
+                if st["state"] == "pending":
+                    st["state"] = "skipped"
+        self._write(state, **kw)
+
+
+# ------------------------------------------------------------------ logging
+import logging  # noqa: E402
+
+log = logging.getLogger("ultraai.worker")
+
+
+def _job_logging(out: Path) -> logging.Handler:
+    """Everything (DEBUG) into out/worker.log; the Studio shows it in its log view."""
+    h = logging.FileHandler(out / "worker.log", encoding="utf-8")
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
+    h.setLevel(logging.DEBUG)
+    root = logging.getLogger()
+    root.addHandler(h)
+    root.setLevel(logging.DEBUG)
+    for noisy in ("numba", "matplotlib", "urllib3", "PIL", "faster_whisper.transcribe"):
+        logging.getLogger(noisy).setLevel(logging.INFO)
+    logging.captureWarnings(True)
+    return h
+
+
 def process(job: Path) -> dict:
     job = Path(job)
     spec = json.loads((job / "job.json").read_text(encoding="utf-8"))
     out = job / "out"
     out.mkdir(exist_ok=True)
-    write_status(job, "queued", stage="waiting for the worker")
-    with _Lock(CACHE_DIR / "worker.lock"):
-        try:
-            result = _process(job, spec, out)
-        except Exception as exc:  # noqa: BLE001 - reported to the Studio
-            write_status(job, "error", error=f"{type(exc).__name__}: {exc}",
-                         traceback=traceback.format_exc()[-3000:])
-            raise
-    return result
+    handler = _job_logging(out)
+    log.info("job %s: %s - %s (separation %s)", spec.get("id"), spec.get("artist"), spec.get("title"),
+             spec.get("separation") or DEFAULT_SEPARATION)
+    write_status(job, "queued", stage="Waiting for the server (another song is being processed)")
+    try:
+        with _Lock(CACHE_DIR / "worker.lock"):
+            try:
+                result = _process(job, spec, out)
+            except Exception as exc:  # noqa: BLE001 - reported to the Studio
+                if _current is not None:
+                    _current.alive = False
+                log.exception("job failed")
+                write_status(job, "error", error=f"{type(exc).__name__}: {exc}",
+                             traceback=traceback.format_exc()[-3000:])
+                raise
+        return result
+    finally:
+        logging.getLogger().removeHandler(handler)
+        handler.close()
 
 
 def _process(job: Path, spec: dict, out: Path) -> dict:
@@ -97,33 +230,41 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
     from .transcribe import transcribe
     from .ultrastar.writer import write
 
+    from .lrc import audio_duration
+
     audio = job / spec["audio"]
     sep = spec.get("separation") or DEFAULT_SEPARATION
     artist, title = spec.get("artist", ""), spec.get("title", "")
     t0 = time.time()
-    write_status(job, "running", stage="separating vocals")
+    duration = audio_duration(audio) or 240.0
+    log.info("audio %s, %.0f s", audio.name, duration)
+    global _current
+    pr = _current = Progress(job, duration, sep)
+    pr.start("separate")
     separate(audio, sep, need_instrumental=False)
-    write_status(job, "running", stage="analysing vocals")
+    pr.start("analyse")
     a = analyse(audio, sep)
     # lyrics: user-supplied, else LRCLIB
     if spec.get("lyrics"):
+        pr.skip("lyrics", "your lyrics")
         cands, source = lyrics_candidates(spec["lyrics"], artist, title), "user"
     else:
-        write_status(job, "running", stage="looking up lyrics")
+        pr.start("lyrics")
         cands, source = fetch_candidates(artist, title, audio), "LRCLIB"
+    log.info("lyrics: %s, %d version(s)", source, len(cands))
     cands = [c for c in cands if c.texts]
     lang_name = spec.get("language") or ""
     if cands and not lang_name:
         code, lang_name = detect_language(cands[0].texts)
     code = language_code(lang_name) if lang_name else None
-    write_status(job, "running", stage="listening (speech recognition)")
+    pr.start("listen")
     vocals16 = a.vocals.with_name(a.vocals.stem + ".mono16000.wav")
     asr = transcribe(vocals16, code, wave=a.wave)
     _editor_media(a, asr, out)
     if not cands:
         draft = "\n".join(s.text for s in asr if s.text)
-        write_status(job, "needs_lyrics", stage="no lyrics found", draft=draft,
-                     seconds=round(time.time() - t0))
+        log.warning("no lyrics found for %s - %s", artist, title)
+        pr.finish("needs_lyrics", stage="no lyrics found", draft=draft, seconds=round(time.time() - t0))
         return {"state": "needs_lyrics"}
     if code == "el" and "roman" not in lang_name.lower() and not spec.get("greek_script"):
         for c in cands:
@@ -131,7 +272,7 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
                 ln.text = greeklish(ln.text)
             c.plain = [greeklish(t) for t in c.plain]
         lang_name = "Greek (romanized)"
-    write_status(job, "running", stage="aligning lyrics and notes")
+    pr.start("align")
     meta = {"ARTIST": artist, "TITLE": title, "LANGUAGE": lang_name}
     for k in ("YEAR", "GENRE", "EDITION"):
         if spec.get(k.lower()):
@@ -148,7 +289,9 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
     side.update(lyrics_source=source, language=lang_name, separation=sep)
     (out / "song.ultraai.json").write_text(json.dumps(side, ensure_ascii=False), encoding="utf-8")
     n_issues = sum(1 for i in info.get("issues", []))
-    write_status(job, "done", stage="finished", issues=n_issues, seconds=round(time.time() - t0))
+    log.info("done in %.0f s: %d lines, %d issues, structure %s", time.time() - t0,
+             len(info.get("lines", [])), n_issues, info.get("structure"))
+    pr.finish("done", stage="finished", issues=n_issues, seconds=round(time.time() - t0))
     return {"state": "done", "issues": n_issues}
 
 
