@@ -1,0 +1,98 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "ultraai/studio/**"
+      - "ultraai/ultrastar/**"
+      - "packaging/**"
+      - "pyproject.toml"
+      - ".github/workflows/windows-installer.yml"
+
+permissions:
+  contents: write   # attach the installer to a release on version tags
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Version
+        id: ver
+        shell: pwsh
+        run: |
+          $base = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF -like "refs/tags/v*") { $v = $env:GITHUB_REF_NAME.Substring(1) } else { $v = "$base.$env:GITHUB_RUN_NUMBER" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Install the Studio (no AI libraries) and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install . "yt-dlp[default]" pywebview pyinstaller
+
+      - name: Get deno (JavaScript runtime yt-dlp needs for YouTube)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force packaging\tools | Out-Null
+          Invoke-WebRequest https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip -OutFile deno.zip
+          Expand-Archive deno.zip -DestinationPath packaging\tools -Force
+          packaging\tools\deno.exe --version
+
+      - name: Build app folder (PyInstaller)
+        run: >
+          pyinstaller --noconfirm --clean --windowed --name "UltraAI Studio"
+          --collect-data ultraai
+          --collect-submodules ultraai.studio
+          --collect-submodules uvicorn
+          --collect-all webview
+          --collect-all yt_dlp
+          --collect-all yt_dlp_ejs
+          --exclude-module numpy --exclude-module torch --exclude-module torchaudio
+          --exclude-module librosa --exclude-module scipy --exclude-module sklearn
+          --exclude-module faster_whisper --exclude-module audio_separator
+          packaging/studio_main.py
+
+      - name: Add tools
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "dist\UltraAI Studio\tools" | Out-Null
+          Copy-Item packaging\tools\deno.exe "dist\UltraAI Studio\tools\"
+
+      - name: Self-test the built app
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\UltraAI Studio\UltraAI Studio.exe" -ArgumentList "--self-test", "$PWD\self-test.txt" -Wait -PassThru
+          Get-Content self-test.txt
+          if ($p.ExitCode -ne 0) { throw "self-test failed ($($p.ExitCode))" }
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+            $env:PATH = "${env:ProgramFiles(x86)}\Inno Setup 6;$env:PATH"
+          }
+          iscc /DAppVersion=${{ steps.ver.outputs.version }} packaging\installer.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UltraAI-Studio-Setup-${{ steps.ver.outputs.version }}
+          path: dist/UltraAI-Studio-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release create $env:GITHUB_REF_NAME (Get-ChildItem dist\UltraAI-Studio-Setup-*.exe).FullName --title "UltraAI Studio $env:GITHUB_REF_NAME" --notes "Windows installer"

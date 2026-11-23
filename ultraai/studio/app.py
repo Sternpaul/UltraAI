@@ -361,25 +361,22 @@ def make_processor(settings: Settings, lib: Library):
                         settings.remote_dir, settings.remote_ultraai, separation=sep)
 
 
-def run(port: int = 8766, open_window: bool = True) -> None:
-    import uvicorn
+def _port_in_use(port: int) -> bool:
+    import socket
 
-    settings = Settings.load()
-    app = create_app(settings)
-    url = f"http://127.0.0.1:{port}/"
-    if not open_window:
-        uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
-        return
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
-    threading.Thread(target=server.run, daemon=True).start()
-    while not server.started:
-        time.sleep(0.05)
+    with socket.socket() as sock:
+        sock.settimeout(0.3)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def open_window_or_browser(url: str) -> None:
+    """Own app window (pywebview / Edge WebView2); the default browser if that is missing."""
     try:
-        import webview  # pywebview: its own window (Edge WebView2 on Windows)
+        import webview
 
-        webview.create_window("UltraAI Studio", url, width=1400, height=900)
+        webview.create_window("UltraAI Studio", url, width=1400, height=900, min_size=(900, 600))
         webview.start()
-    except ImportError:
+    except Exception:  # noqa: BLE001 - no WebView2 / no GUI toolkit: use the browser
         import webbrowser
 
         webbrowser.open(url)
@@ -388,4 +385,28 @@ def run(port: int = 8766, open_window: bool = True) -> None:
                 time.sleep(3600)
         except KeyboardInterrupt:
             pass
+
+
+def run(port: int = 8766, open_window: bool = True) -> None:
+    import uvicorn
+
+    url = f"http://127.0.0.1:{port}/"
+    if _port_in_use(port):  # already running (second start): just show it
+        if open_window:
+            open_window_or_browser(url)
+        return
+    settings = Settings.load()
+    app = create_app(settings)
+    if not open_window:
+        uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+        return
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
+                                           log_config=None))
+    th = threading.Thread(target=server.run, daemon=True)
+    th.start()
+    while not server.started:
+        if not th.is_alive():
+            raise RuntimeError(f"the Studio server could not start on port {port}")
+        time.sleep(0.05)
+    open_window_or_browser(url)
     server.should_exit = True
