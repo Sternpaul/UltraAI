@@ -8,12 +8,14 @@ audio (constant offset > 250 ms while offset-corrected timing is good) are liste
 their absolute timing says more about the reference file than about us.
 """
 import json
+import os
 import statistics as st
 import sys
 from pathlib import Path
 
 
-def load(spec, out="out/library"):
+def load(spec, out=None):
+    out = out or os.environ.get("ULTRAAI_OUT", "out/library")
     tag, gen = spec.split(":")
     p = Path(out) / "runs" / tag / "results.jsonl"
     rows = {}
@@ -36,7 +38,7 @@ def main(a, b, metric="onset_within_250ms"):
     names = sorted(set(A) & set(B))
     shifted = [n for n in names if ref_shifted(A[n]) or ref_shifted(B[n])]
     clean = [n for n in names if n not in shifted]
-    keys = [metric, "onset_rel_within_100ms", "word_recall", "line_f1", "syllable_split_agreement"]
+    keys = [metric, "onset_rel_within_100ms", "word_recall", "line_f1", "syllable_split_agreement", "pitch_class_acc"]
     print(f"{len(names)} songs in both, {len(shifted)} with shifted reference excluded: {', '.join(s[:25] for s in shifted)}")
     for k in keys:
         va, vb = [A[n].get(k, 0) for n in clean], [B[n].get(k, 0) for n in clean]
