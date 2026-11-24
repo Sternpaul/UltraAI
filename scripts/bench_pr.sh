@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Quick benchmark gate for a pipeline PR — run inside any UltraAI checkout that has
-# the benchmark library and the analysis cache (the processing server, or a laptop
-# with both copied over):
+# the benchmark library and the analysis cache (any machine that has both):
 #
 #   bash scripts/bench_pr.sh <branch> [tag]
 #
