@@ -43,3 +43,36 @@ testpaths = ["tests"]
 
 [tool.setuptools.package-data]
 ultraai = ["review_page.html", "issue_model.pkl", "model_bench.json", "studio/web/*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+# harness.py:151 uses PEP 701 f-strings (3.12+ only), so the file does not even parse
+# with target py311; syntax errors cannot be per-file-ignored in current ruff, and the
+# file is outside this PR's scope - excluded here, fix belongs with the 3.11 support.
+extend-exclude = ["ultraai/eval/harness.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+  # the tree predates the linter; ruff is introduced here without reformatting the repo
+  "E501",  # long lines in many files (line-length 120 still guides new code / the formatter)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# pre-existing issues in files outside the lint PR's scope, to be fixed where they live
+"scripts/failure_analysis.py" = ["F401"]
+"scripts/m3_debug.py" = ["I001"]
+"scripts/studio_ui_smoke.py" = ["E401", "E702", "I001"]
+"scripts/syllable_eval.py" = ["F401"]
+"tests/test_studio.py" = ["E702", "F401"]
+"tests/test_ultrastar.py" = ["F401"]
+"ultraai/align.py" = ["F821"]                # torch is imported lazily (tests run without the worker install)
+"ultraai/generate.py" = ["F821"]             # torch is imported lazily inside analyse()
+"ultraai/issues.py" = ["F401"]
+"ultraai/pitch.py" = ["I001"]
+"ultraai/studio/app.py" = ["I001"]
+"ultraai/studio/importer.py" = ["I001"]
+"ultraai/studio/processors.py" = ["I001"]
+"ultraai/studio/store.py" = ["I001"]
+"ultraai/worker.py" = ["I001"]
