@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from . import config
 from .lyrics import Lyrics  # torch is imported lazily: the Studio base install has no torch
 
 SR = 16000
@@ -205,10 +206,43 @@ def align_robust(lyrics: Lyrics, wave: np.ndarray, em: torch.Tensor | None = Non
     return words
 
 
+# ------------------------------------------------------------------ Whisper time priors
+ASR_PRIOR_WIN_S = 2.0   # only ASR words this close (s) to a line's anchor can center a word
+
+
+def match_asr_time(text: str, asr_words: list, ref: float,
+                   win: float = ASR_PRIOR_WIN_S) -> float:
+    """Start time of the ASR word best matching lyric word ``text`` near ``ref`` seconds.
+
+    Candidates are ASR words whose normalized-key similarity to ``text`` reaches
+    ``issues.ASR_SIM`` (0.6) and whose start is within ``win`` s of ``ref``; the nearest
+    in time wins.  Returns NaN when no ASR word matches.
+    """
+    from .issues import ASR_SIM, _key, _sim  # small matcher, same normalization as the review features
+
+    k = _key(text)
+    if not k:
+        return float("nan")
+    best, best_dt = float("nan"), float("inf")
+    for w in asr_words:
+        ak = _key(w.text)
+        if not ak or _sim(k, ak) < ASR_SIM:
+            continue
+        dt = abs(w.start - ref)
+        if dt <= win and dt < best_dt:
+            best, best_dt = float(w.start), dt
+    return best
+
+
 # ------------------------------------------------------------------ LRC-anchored alignment
 def viterbi(em: np.ndarray, targets: list[int], lo: np.ndarray, hi: np.ndarray,
-            blank: int = 0) -> list[tuple[int, int, float]]:
+            blank: int = 0, prior_centers: np.ndarray | None = None) -> list[tuple[int, int, float]]:
     """CTC forced alignment where target k may only occupy frames [lo[k], hi[k]).
+
+    ``prior_centers``: optional per-target time prior in seconds (NaN = none).  When given
+    and ``config.asr_prior`` (beta) > 0, each label state gets a Gaussian bonus
+    ``beta * exp(-((t*FRAME_S - c_k)^2) / (2*sigma^2))`` (sigma = ``config.asr_prior_sigma``)
+    added to its emission score, pulling the word toward the time Whisper heard it.
 
     Returns one (start_frame, end_frame, mean_prob) per target token.
     """
@@ -227,12 +261,31 @@ def viterbi(em: np.ndarray, targets: list[int], lo: np.ndarray, hi: np.ndarray,
     can_skip = np.zeros(S, dtype=bool)
     can_skip[3::2] = ext[3::2] != ext[1:-2:2]
 
+    # precompute the prior bonus B[t, k] for the label states (odd indices; blanks get 0)
+    prior_bonus: np.ndarray | None = None
+    if prior_centers is not None:
+        beta = config.get_float("asr_prior")
+        sigma = config.get_float("asr_prior_sigma")
+        centers = np.asarray(prior_centers, dtype=np.float64)
+        if len(centers) != L:
+            raise ValueError(f"prior_centers has {len(centers)} entries, expected {L}")
+        if beta > 0 and sigma > 0:
+            t_sec = np.arange(T, dtype=np.float64) * FRAME_S
+            prior_bonus = np.zeros((T, L))
+            for k in range(L):
+                c = centers[k]
+                if not np.isnan(c):
+                    d = t_sec - c
+                    prior_bonus[:, k] = beta * np.exp(-(d * d) / (2.0 * sigma * sigma))
+
     NEG = -1e30
     prev = np.full(S, NEG)
     bp = np.zeros((T, S), dtype=np.int8)
     frames = np.arange(S)
     for t in range(T):
         e = em[t, ext]
+        if prior_bonus is not None:
+            e[1::2] += prior_bonus[t]  # e is a fancy-indexed copy; label states are the odd entries
         allowed = (s_lo <= t) & (t < s_hi)
         if t == 0:
             cur = np.full(S, NEG)
@@ -324,27 +377,43 @@ def repair_anchors(lyrics: Lyrics, words: list[AlignedWord], times: list[float],
 
 
 def align_anchored(lyrics: Lyrics, em: torch.Tensor, times: list[float],
-                   offsets: list[float], window: float = ANCHOR_WINDOW_S) -> list[AlignedWord]:
-    """Global alignment with each line confined to [t_i - window, t_{i+1} + window]."""
+                   offsets: list[float], window: float = ANCHOR_WINDOW_S,
+                   asr_words: list | None = None) -> list[AlignedWord]:
+    """Global alignment with each line confined to [t_i - window, t_{i+1} + window].
+
+    ``asr_words``: Whisper word times (start/end/text/prob).  When given, the first char
+    token of each lyric word gets a time prior centered on the best-matching ASR word near
+    its line's anchor (see :func:`match_asr_time`); ``viterbi`` adds the Gaussian bonus.
+    """
     _, dictionary = _model()
     star = dictionary["*"]
     em_np = em.numpy()
     T = len(em_np)
     anchor = [t + o for t, o in zip(times, offsets)]
     targets, owners, lo, hi = [star], [None], [0], [T]
+    prior_centers: list[float] | None = [float("nan")] if asr_words else None
     prev_line = None
     for wi, w in enumerate(lyrics.words):
         li = w.line
         if prev_line is not None and li != prev_line:
             targets.append(star); owners.append(None); lo.append(0); hi.append(T)  # noqa: E702
+            if prior_centers is not None:
+                prior_centers.append(float("nan"))
         a = max(0, int((anchor[li] - window) / FRAME_S))
         nxt = anchor[li + 1] if li + 1 < len(anchor) else T * FRAME_S
         b = min(T, int((max(nxt, anchor[li]) + window) / FRAME_S))
         for ci, ch in enumerate(w.align):
             targets.append(dictionary[ch]); owners.append((wi, ci)); lo.append(a); hi.append(b)  # noqa: E702
+            if prior_centers is not None:
+                # prior on the word's first char token, centered on the matching ASR word
+                prior_centers.append(match_asr_time(w.display, asr_words, anchor[li]) if ci == 0
+                                     else float("nan"))
         prev_line = li
     targets.append(star); owners.append(None); lo.append(0); hi.append(T)  # noqa: E702
-    spans = viterbi(em_np, targets, np.array(lo), np.array(hi))
+    if prior_centers is not None:
+        prior_centers.append(float("nan"))
+    spans = viterbi(em_np, targets, np.array(lo), np.array(hi),
+                    prior_centers=np.array(prior_centers) if prior_centers is not None else None)
 
     per_word: dict[int, list[CharTime]] = {}
     for (s, e, p), owner in zip(spans, owners):

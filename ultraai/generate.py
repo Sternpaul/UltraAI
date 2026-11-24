@@ -933,7 +933,9 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
             for window in (aligner.ANCHOR_WINDOW_S, 3.0, 6.0):
                 try:
                     with stage("align"):
-                        words = aligner.align_anchored(lyrics, a.emissions, times, offsets, window=window)
+                        words = aligner.align_anchored(
+                            lyrics, a.emissions, times, offsets, window=window,
+                            asr_words=asr_words if config.get_float("asr_prior") > 0 else None)
                     info.update(anchored=True, anchor_window=window, offset_median=float(np.median(offsets)))
                     expected = [t + o for t, o in zip(times, offsets)]
                     break

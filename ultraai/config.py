@@ -68,6 +68,8 @@ OPTS: list[Opt] = [
     Opt("stage_timing", "ULTRAAI_STAGE_TIMING", "0", "record per-stage seconds of the pipeline into generate.STAGE_TIMES (benchmarks)"),
     Opt("onset_snap", "ULTRAAI_ONSET_SNAP", "1", "snap aligned word onsets to detected vocal onsets within the window"),
     Opt("onset_snap_win", "ULTRAAI_ONSET_SNAP_WIN", "0.08", "seconds around a word onset to look for a vocal onset to snap to"),
+    Opt("asr_prior", "ULTRAAI_ASR_PRIOR", "1.0", "Gaussian time-prior bonus (log-prob units) for aligned words near their Whisper-heard time; 0 disables"),
+    Opt("asr_prior_sigma", "ULTRAAI_ASR_PRIOR_SIGMA", "0.3", "std-dev (s) of the Gaussian Whisper time prior in the anchored Viterbi"),
     Opt("background_units", "ULTRAAI_BACKGROUND_UNITS",
         "ultraai-bench.service ultraai-library.service ultraai-after-run.service",
         "systemd user units paused while a song job runs; read once at import"),
