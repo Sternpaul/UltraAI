@@ -50,6 +50,33 @@ files, averaged over the benchmark songs:
 
 Timing is identical across pitch models (they only change note pitches, not onsets).
 
+## Depth pass: pitch models on 25 reference songs (desktop CPU)
+
+The 3-song run above is a small sample; this table is the same 7 pitch models on the full
+25-song benchmark set (24 scored; one song has no pitchable notes), with desktop wall-times:
+
+| Model | pitch | pitch±1 | s/song (desktop) |
+|---|---|---|---|
+| **swift (default)** | **71.2** | 81.8 | 31 |
+| crepe-tiny | 70.7 | 82.1 | 118 |
+| rmvpe | 70.6 | **82.9** | 43 |
+| vote | 70.4 | 81.5 | 28 |
+| fcpe | 70.0 | 80.8 | **18** |
+| pesto | 68.6 | 80.5 | 61 |
+| crepe-full | (73.1 on 3 songs) | (87.2) | 892 — not worth it |
+
+Lesson: the 3-song ranking (rmvpe 82.0 vs swift 80.1) **did not generalize** — on 25 songs
+swift has the best exact pitch and rmvpe only wins within a semitone. Keep swift as default;
+rmvpe is the pick if ±1 semitone matters more than exact pitch.
+
+## Karaoke/lead models: measured, not worth it (so far)
+
+Backing-vocal removal (ULTRAAI_LEAD) was tested on the 25-song set with UVR_MDXNET_KARA_2:
+timing **−1.5**, timing-rel **−2.7**, pitch +0.8 — at a cost of ~+825 s/song. Removing
+backing vocals degrades the stem the aligner relies on. **Recommendation: keep lead off**
+(the default). The long run still ranks all 10 lead models on 3 songs; revisit only if a
+model shows a pitch gain there worth chasing.
+
 ## Pipeline feature gate (25 reference songs, generator m3)
 
 Every pipeline change is gated before merging: regenerate all 25 cached songs and require
@@ -62,18 +89,18 @@ jitter (timing-rel −1.0) without improving timing. Details on the pull request
 ## Current recommendations
 
 * **Best quality:** melband Kim RoFormer separation (timing 92.0) + rmvpe pitch — but ~16 min/song on the bench host.
-* **Best balance:** **Kim_Vocal_2.onnx** separation (timing 90.0 *and* best pitch 82.5, ~7 min/song) + **rmvpe** pitch (+15 s/song). This is the pick for quality without a long wait.
+* **Best balance:** **Kim_Vocal_2.onnx** separation (timing 90.0 *and* best pitch 82.5, ~7 min/song) + **swift** pitch (best exact pitch on the 25-song set, 71.2; use rmvpe if ±1 semitone matters more, 82.9).
 * **Fastest reasonable:** htdemucs (default) + swift — 87.6 timing, 80.1 pitch, separation cached.
-* Karaoke/lead models: 10 candidates queued in the long run — no numbers yet.
+* Karaoke/lead models: measured on 25 songs — clear negative (see above), stay off.
 
 ## In progress / planned
 
 | Run | Scope | Status |
 |---|---|---|
 | Long model benchmark (low-power host) | 31 configs × 3 songs; 17 done | ~14 configs left |
-| Depth pass on this machine | all 7 pitch models × **25 songs**, incl. desktop-CPU s/song | running |
-| Lead/karaoke depth pass | 10 lead models × song subset | planned |
-| Separation depth pass | top-3 separation models × 10 songs | planned |
+| Pitch depth pass (desktop CPU) | 6 pitch models × **25 songs** | **done — table above** |
+| Lead/karaoke depth pass | 10 lead models × 25 songs | **paused — KARA_2 already shows a clear negative; see above** |
+| Separation depth pass | top-3 separation models × 10–25 songs | planned |
 | Parameter sweeps | alignment windows, note styles, harmonize tolerances (each ~7 min on 25 songs) | planned |
 | Alternative timing approach | Whisper word-timestamps instead of forced alignment ("m4") | planned |
 
