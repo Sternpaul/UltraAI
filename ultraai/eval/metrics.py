@@ -10,6 +10,9 @@ Metrics
 - pitch:     frame-wise note activity F1 and pitch-class accuracy where both sing
 - score:     share of our pitched note time a "perfect singer of the reference" would hit
              (USDX medium difficulty: octave-free, +-1 semitone)
+- grid:      grid_bpm_ratio (hyp #BPM / ref #BPM) and grid_phase_ms (signed offset of the
+             reference's first note from the nearest hyp beat pulse) — null unless both
+             sides have #BPM, #GAP and notes
 """
 
 from __future__ import annotations
@@ -142,14 +145,39 @@ def _pc_dist(a: int, b: int) -> int:
     return min(d, 12 - d)
 
 
-def compare(ref: Song, hyp: Song, voice: int = 1) -> dict[str, float]:
+def _grid_metrics(ref: Song, hyp: Song, voice: int) -> dict[str, float | None]:
+    """Beat-grid agreement with the reference; nulls when either side lacks #BPM/#GAP/notes.
+
+    grid_bpm_ratio: hyp #BPM / ref #BPM (1.0 = same tempo).
+    grid_phase_ms:  phase offset between the two grids, evaluated at the reference's
+                    first note (voice ``voice``): the signed distance in ms from that
+                    note's time to the nearest hyp beat pulse (positive = the note falls
+                    after the nearest hyp pulse). 0 = the grids coincide there.
+    """
+    out: dict[str, float | None] = {"grid_bpm_ratio": None, "grid_phase_ms": None}
+    if not (ref.has("BPM") and hyp.has("BPM") and ref.has("GAP") and hyp.has("GAP")):
+        return out
+    rn = list(ref.notes(voice))
+    hn = list(hyp.notes(voice))
+    if not rn or not hn:
+        return out
+    out["grid_bpm_ratio"] = hyp.bpm / ref.bpm
+    t0 = ref.beat_to_seconds(min(n.start for n in rn))
+    p = hyp.seconds_per_beat
+    u = (t0 - hyp.gap_ms / 1000.0) / p
+    frac = u - round(u)  # in [-0.5, 0.5): offset of t0 from the nearest hyp pulse, in beats
+    out["grid_phase_ms"] = 1000.0 * frac * p
+    return out
+
+
+def compare(ref: Song, hyp: Song, voice: int = 1) -> dict[str, float | None]:
     rw, hw = timed_words(ref, voice), timed_words(hyp, voice)
     if "greek" in (ref.get("LANGUAGE") or "").lower():
         # Greeklish writes chi as h, ch or x: compare on one spelling
         for w in rw + hw:
             w.token = w.token.replace("x", "h")
     pairs = match_words(rw, hw)
-    m: dict[str, float] = {
+    m: dict[str, float | None] = {
         "ref_words": len(rw),
         "hyp_words": len(hw),
         "word_recall": len(pairs) / len(rw) if rw else 0.0,
@@ -207,6 +235,8 @@ def compare(ref: Song, hyp: Song, voice: int = 1) -> dict[str, float]:
     if hp:
         m["perfect_singer_score"] = sum(1 for f, pitch in hp.items()
                                         if f in rp and _pc_dist(rp[f], pitch) <= 1) / len(hp)
+
+    m.update(_grid_metrics(ref, hyp, voice))
     return m
 
 

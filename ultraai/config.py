@@ -55,6 +55,7 @@ OPTS: list[Opt] = [
     Opt("harm_melisma", "ULTRAAI_HARM_MELISMA", "0", "also unify melisma shapes across repeats"),
     Opt("harm_mode", "ULTRAAI_HARM_MODE", "pool", "consensus pitch across repeats: pool|median"),
     Opt("tempo", "ULTRAAI_TEMPO", "1", "detect beats and write a tempo-locked #BPM/#GAP"),
+    Opt("beat_robust", "ULTRAAI_BEAT_ROBUST", "1", "score half/double-tempo candidate grids against the onsets with a plausible-BPM prior (tempo.py); 0 = legacy steady-grid choice"),
     Opt("repair", "ULTRAAI_REPAIR", "1", "override LRC timestamps the audio clearly contradicts"),
     Opt("repair_conf", "ULTRAAI_REPAIR_CONF", "0.15", "min alignment confidence to trust the audio over the LRC"),
     Opt("repair_shift", "ULTRAAI_REPAIR_SHIFT", "3.0", "seconds of disagreement that count as a wrong LRC timestamp"),

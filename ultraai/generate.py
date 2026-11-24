@@ -988,7 +988,7 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
         grid = None
         if config.get_bool("tempo"):
             from .audio import work_dir
-            from .tempo import choose_grid, detect_beats
+            from .tempo import choose_grid, detect_beats, load_onsets
 
             mix = work_dir(audio) / "mix.wav"
             if not mix.exists() and not mix.with_suffix(".beats.npz").exists():
@@ -996,6 +996,7 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
 
                 to_wav(audio, mix)  # the library run deletes decoded mixes to save disk
             tempo, beats = detect_beats(mix)
-            grid = choose_grid(tempo, beats, syl[0].start)
+            onsets, strengths = load_onsets(mix)
+            grid = choose_grid(tempo, beats, syl[0].start, onsets=onsets, strengths=strengths)
             info["tempo"] = grid.tempo
         return to_song(syl, meta, audio.name, grid), info
