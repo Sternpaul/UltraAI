@@ -302,6 +302,7 @@ def convert(track: Track, out_root: Path, separation: str, lead: str | None, gre
 
     if lead:
         import os
+
         from . import config
         os.environ[config.env_of("lead")] = lead
     if method == "m3":
