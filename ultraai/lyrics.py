@@ -12,13 +12,18 @@ from dataclasses import dataclass, field
 
 import pyphen
 
-# ---------------------------------------------------------------- romanisation
+# ---------------------------------------------------------------- romanisation / Greeklish
+# ONE canonical Greek transliteration, shared by romanize() (lowercase a-z, the aligner
+# alphabet) and greeklish() (case-preserving, the USDB display text).  χ -> "ch" (not "x"):
+# eval/metrics.py folds ch/kh -> x when comparing, so both spellings score the same.
 _GREEK = {
     "α": "a", "β": "v", "γ": "g", "δ": "d", "ε": "e", "ζ": "z", "η": "i", "θ": "th",
     "ι": "i", "κ": "k", "λ": "l", "μ": "m", "ν": "n", "ξ": "x", "ο": "o", "π": "p",
     "ρ": "r", "σ": "s", "ς": "s", "τ": "t", "υ": "i", "φ": "f", "χ": "ch", "ψ": "ps",
     "ω": "o",
 }
+_GREEK_PAIRS = {"ου": "ou", "αι": "ai", "ει": "ei", "οι": "oi", "αυ": "av", "ευ": "ev",
+                "μπ": "b", "ντ": "nt", "γκ": "gk", "γγ": "gg"}
 _SPECIAL = {"ß": "ss", "æ": "ae", "ø": "o", "œ": "oe", "ł": "l", "đ": "d", "þ": "th",
             "’": "'", "‘": "'", "`": "'", "´": "'"}
 
@@ -42,6 +47,29 @@ def _uromanize(text: str) -> str:
 
         _uroman = uroman.Uroman()
     return _uroman.romanize_string(text)
+
+
+def greeklish(text: str) -> str:
+    """Transliterate Greek script the way USDB song files usually do ("Πού πας" -> "Pou pas").
+
+    The canonical Greek -> Latin function (batch.py used to carry a second one with
+    χ -> "x"; it now imports this one).
+    """
+    out, i = [], 0
+    base = "".join(c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn")
+    while i < len(base):
+        two = base[i:i + 2].lower()
+        if two in _GREEK_PAIRS:
+            rep = _GREEK_PAIRS[two]
+            i += 2
+            src = base[i - 2]
+        else:
+            c = base[i]
+            rep = _GREEK.get(c.lower(), c)
+            src = c
+            i += 1
+        out.append(rep.capitalize() if src.isupper() and rep != src else rep)
+    return "".join(out)
 
 
 def romanize(text: str) -> str:

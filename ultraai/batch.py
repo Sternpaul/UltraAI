@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .lrc import LrcResult, fetch_candidates, parse_lrc
+from .lyrics import greeklish
 
 AUDIO_EXT = {".mp3", ".m4a", ".flac", ".wav", ".ogg", ".opus", ".aac", ".wma"}
 LANG_NAMES = {"en": "English", "de": "German", "el": "Greek"}
@@ -80,35 +81,6 @@ def detect_language(lines: list[str]) -> tuple[str, str]:
     best = max(scores, key=lambda k: (scores[k], k == "en"))
     _, code, name = (None, *_STOPWORDS[best][:2])
     return code, name
-
-
-# ------------------------------------------------------------------ Greek -> Greeklish
-_GL_PAIRS = {"ου": "ou", "αι": "ai", "ει": "ei", "οι": "oi", "αυ": "av", "ευ": "ev", "μπ": "b",
-             "ντ": "nt", "γκ": "gk", "γγ": "gg"}
-_GL = {"α": "a", "β": "v", "γ": "g", "δ": "d", "ε": "e", "ζ": "z", "η": "i", "θ": "th", "ι": "i",
-       "κ": "k", "λ": "l", "μ": "m", "ν": "n", "ξ": "x", "ο": "o", "π": "p", "ρ": "r", "σ": "s",
-       "ς": "s", "τ": "t", "υ": "y", "φ": "f", "χ": "x", "ψ": "ps", "ω": "o"}
-
-
-def greeklish(text: str) -> str:
-    """Transliterate Greek script the way USDB song files usually do ("Πού πας" -> "Pou pas")."""
-    import unicodedata
-
-    out, i = [], 0
-    base = "".join(c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn")
-    while i < len(base):
-        two = base[i:i + 2].lower()
-        if two in _GL_PAIRS:
-            rep = _GL_PAIRS[two]
-            i += 2
-            src = base[i - 2]
-        else:
-            c = base[i]
-            rep = _GL.get(c.lower(), c)
-            src = c
-            i += 1
-        out.append(rep.capitalize() if src.isupper() and rep != src else rep)
-    return "".join(out)
 
 
 # ------------------------------------------------------------------ metadata
