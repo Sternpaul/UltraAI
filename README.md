@@ -6,6 +6,40 @@ as the truth; the audio decides *when* each syllable is sung and at which pitch.
 marks the places where the machine is unsure, and **UltraAI Studio** takes you straight
 there to fix them.
 
+## How it works
+
+```mermaid
+flowchart LR
+    A[audio file] --> S[vocal separation]
+    S --> AN[analyse: CTC emissions + pitch track]
+    S --> W[Whisper: what is sung]
+    L[lyrics: LRCLIB / pasted] --> R[reconcile structure: sung order, repeats]
+    W --> R
+    R --> AL[forced alignment of the known lyrics]
+    AN --> AL
+    AL --> N[syllables -> notes, melisma, golden/freestyle]
+    N --> G[beat grid: BPM + GAP]
+    G --> T[UltraStar .txt + sidecar with review issues]
+```
+
+Every expensive step is cached per audio file in `~/.cache/ultraai/work/<hash>/`, so changing
+lyrics or re-running costs seconds. Benchmarks score generated songs against hand-made ones
+(`ultraai eval`, `scripts/`), which is how every heuristic here was tuned — see
+[PLAN.md](PLAN.md) for the measurements.
+
+```mermaid
+flowchart LR
+    subgraph laptop[UltraAI Studio - laptop]
+        UI[web editor] --- API[FastAPI on 127.0.0.1]
+        LIB[song library: plain USDX folders]
+    end
+    subgraph server[processing server - Linux, CPU or GPU]
+        WK[ultraai worker: separation, Whisper, alignment, pitch]
+    end
+    API -- "SSH/scp: audio up, results down" --> WK
+    LIB --- API
+```
+
 ## UltraAI Studio (Windows app)
 
 Download the installer from the [latest release](https://github.com/Sternpaul/UltraAI/releases/latest)
