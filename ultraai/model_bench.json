@@ -1,0 +1,184 @@
+{
+ "songs": [
+  "Charli XCX - Apple",
+  "Creedence Clearwater Revival - Have You Ever Seen The Rain",
+  "Wir sind Helden - Denkmal"
+ ],
+ "separation": {
+  "hdemucs_mmi.yaml": {
+   "timing": 86.8,
+   "timing_100": 74.6,
+   "words": 97.6,
+   "pitch": 80.5,
+   "pitch_1": 88.1,
+   "min_per_song": 5.5,
+   "score": 127.05
+  },
+  "UVR-MDX-NET-Voc_FT.onnx": {
+   "timing": 90.6,
+   "timing_100": 80.0,
+   "words": 97.6,
+   "pitch": 80.8,
+   "pitch_1": 88.7,
+   "min_per_song": 7.1,
+   "score": 131.0
+  },
+  "Kim_Vocal_2.onnx": {
+   "timing": 90.0,
+   "timing_100": 78.3,
+   "words": 97.6,
+   "pitch": 82.5,
+   "pitch_1": 90.0,
+   "min_per_song": 7.1,
+   "score": 131.25
+  },
+  "UVR-MDX-NET_Main_406.onnx": {
+   "timing": 89.8,
+   "timing_100": 79.1,
+   "words": 97.6,
+   "pitch": 80.4,
+   "pitch_1": 88.5,
+   "min_per_song": 7.1,
+   "score": 130.0
+  },
+  "htdemucs_ft": {
+   "timing": 88.2,
+   "timing_100": 76.4,
+   "words": 97.6,
+   "pitch": 81.4,
+   "pitch_1": 88.2,
+   "min_per_song": 24.5,
+   "score": 128.9
+  },
+  "MDX23C-8KFFT-InstVoc_HQ.ckpt": {
+   "timing": 90.0,
+   "timing_100": 79.2,
+   "words": 97.6,
+   "pitch": 81.0,
+   "pitch_1": 88.9,
+   "min_per_song": 118.0,
+   "score": 130.5
+  },
+  "model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt": {
+   "timing": 90.1,
+   "timing_100": 79.1,
+   "words": 97.6,
+   "pitch": 81.3,
+   "pitch_1": 88.8,
+   "min_per_song": 93.5,
+   "score": 130.75
+  },
+  "melband": {
+   "timing": 92.0,
+   "timing_100": 80.8,
+   "words": 97.6,
+   "pitch": 80.2,
+   "pitch_1": 87.6,
+   "min_per_song": 16.5,
+   "score": 132.1
+  },
+  "melband_roformer_big_beta4.ckpt": {
+   "timing": 91.3,
+   "timing_100": 80.6,
+   "words": 97.6,
+   "pitch": 79.6,
+   "pitch_1": 87.2,
+   "min_per_song": 52.5,
+   "score": 131.1
+  },
+  "htdemucs": {
+   "timing": 87.6,
+   "timing_100": 76.7,
+   "words": 97.6,
+   "pitch": 80.1,
+   "pitch_1": 88.4,
+   "min_per_song": 7.0,
+   "score": 127.64999999999999
+  }
+ },
+ "pitch": {
+  "swift": {
+   "timing": 87.6,
+   "timing_100": 76.7,
+   "words": 97.6,
+   "pitch": 80.1,
+   "pitch_1": 88.4,
+   "min_per_song": 0.1,
+   "score": 127.64999999999999
+  },
+  "fcpe": {
+   "timing": 87.6,
+   "timing_100": 76.7,
+   "words": 97.6,
+   "pitch": 79.9,
+   "pitch_1": 87.9,
+   "min_per_song": 0.1,
+   "score": 127.55
+  },
+  "pesto": {
+   "timing": 87.6,
+   "timing_100": 76.7,
+   "words": 97.6,
+   "pitch": 79.2,
+   "pitch_1": 88.5,
+   "min_per_song": 0.4,
+   "score": 127.19999999999999
+  },
+  "crepe-tiny": {
+   "timing": 87.6,
+   "timing_100": 76.7,
+   "words": 97.6,
+   "pitch": 80.7,
+   "pitch_1": 89.0,
+   "min_per_song": 0.5,
+   "score": 127.94999999999999
+  },
+  "rmvpe": {
+   "timing": 87.6,
+   "timing_100": 76.7,
+   "words": 97.6,
+   "pitch": 82.0,
+   "pitch_1": 91.0,
+   "min_per_song": 0.3,
+   "score": 128.6
+  },
+  "vote": {
+   "timing": 87.6,
+   "timing_100": 76.7,
+   "words": 97.6,
+   "pitch": 79.9,
+   "pitch_1": 89.2,
+   "min_per_song": 0.4,
+   "score": 127.55
+  },
+  "crepe-full": {
+   "timing": 87.6,
+   "timing_100": 76.7,
+   "words": 97.6,
+   "pitch": 81.6,
+   "pitch_1": 88.8,
+   "min_per_song": 10.6,
+   "score": 128.39999999999998
+  }
+ },
+ "lead": {
+  "": {
+   "timing": 87.6,
+   "timing_100": 76.7,
+   "words": 97.6,
+   "pitch": 80.1,
+   "pitch_1": 88.4,
+   "min_per_song": 0.1,
+   "score": 127.64999999999999
+  }
+ },
+ "baseline": {
+  "timing": 87.6,
+  "timing_100": 76.7,
+  "words": 97.6,
+  "pitch": 80.1,
+  "pitch_1": 88.4,
+  "min_per_song": 0.1,
+  "score": 127.64999999999999
+ }
+}

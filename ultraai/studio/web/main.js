@@ -248,17 +248,35 @@ export async function processDialog(title = "Processing options", start = null) 
     ...(settings.defaults || {}), ...(start || {}) };
   const dlg = document.getElementById("process-dialog"), box = document.getElementById("process-opts");
   document.getElementById("process-title").textContent = title;
+  const best = g => {  // best measured timing / pitch in a group, for the ★ marks
+    const b = models[g].filter(m => m.bench);
+    return { timing: Math.max(...b.map(m => m.bench.timing)), pitch: Math.max(...b.map(m => m.bench.pitch)) };
+  };
+  const benchText = (g, m) => {
+    if (g === "notes") return m.note;
+    if (!m.bench) return m.key === "" ? "" : `not measured yet · ${costText(m.rate)}`;
+    const b = best(g);
+    const parts = [];
+    if (g !== "pitch") parts.push(`timing ${m.bench.timing.toFixed(1)}${m.bench.timing === b.timing ? " ★" : ""}`);
+    parts.push(`pitch ${m.bench.pitch.toFixed(1)}${m.bench.pitch === b.pitch ? " ★" : ""}`);
+    if (m.key) parts.push(costText(m.rate));
+    return parts.join(" · ");
+  };
   const radio = (group, key, legend) => h("fieldset", {}, h("legend", {}, legend),
-    ...models[group].map(m => h("label", { class: "row" },
+    h("div", { class: "optlist" }, ...models[group].map(m => h("label", { class: "row" },
       h("input", { type: "radio", name: key, value: m.key, checked: o[key] === m.key, onchange: () => { o[key] = m.key; refresh(); } }),
       h("span", {}, m.name, m.by ? h("span", { class: "muted" }, ` · ${m.by}`) : null,
-        m.note ? h("div", { class: "muted" }, m.note + (m.rate ? ` · ${costText(m.rate)}` : "")) : null))));
+        h("div", { class: "muted" }, benchText(group, m)))))));
   const checks = (group, key, mainKey, legend) => h("fieldset", { dataset: { group } }, h("legend", {}, legend),
-    ...models[group].map(m => h("label", { class: "row" },
+    h("div", { class: "optlist" }, ...models[group].map(m => h("label", { class: "row" },
       h("input", { type: "checkbox", name: key, value: m.key, checked: o[key].includes(m.key),
         onchange: e => { o[key] = e.target.checked ? [...o[key], m.key] : o[key].filter(x => x !== m.key); refresh(); } }),
-      h("span", {}, m.name, h("div", { class: "muted" }, costText(m.rate))))));
+      h("span", {}, m.name, m.by ? h("span", { class: "muted" }, ` · ${m.by}`) : null,
+        h("div", { class: "muted" }, costText(m.rate)))))));
+  const bs = models.bench_songs || [];
   box.replaceChildren(
+    bs.length ? h("p", { class: "muted benchnote" }, `Scores: % of words timed within 250 ms and % of notes on the right pitch, ` +
+      `measured against hand-made songs (${bs.length} test songs: ${bs.join(", ")}). ★ = best measured.`) : null,
     radio("separation", "separation", "Vocal separation"),
     radio("pitch", "pitch", "Pitch model"),
     checks("separation", "sep_check", "separation", "Double-check with these separations"),

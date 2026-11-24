@@ -29,32 +29,7 @@ from .store import Library, SongState
 
 log = logging.getLogger("ultraai.studio")
 
-# what the processing-options window offers; "rate" = seconds of work per second of audio on the
-# 4-core test server (CPU) - a GPU is typically 10x faster for the model steps
-MODEL_CHOICES = {
-    "separation": [
-        {"key": "htdemucs", "name": "HTDemucs", "by": "Meta", "rate": 1.6, "note": "default, all accuracy numbers use it"},
-        {"key": "htdemucs_ft", "name": "HTDemucs fine-tuned", "by": "Meta", "rate": 5.0, "note": "4 models averaged"},
-        {"key": "melband", "name": "MelBand RoFormer", "by": "Kimberley Jensen", "rate": 6.0, "note": "cleanest vocals"},
-    ],
-    "pitch": [
-        {"key": "swift", "name": "SwiftF0", "rate": 0.02, "note": "default, fast"},
-        {"key": "pesto", "name": "PESTO", "rate": 0.25, "note": "trained on sung vocals"},
-        {"key": "crepe-tiny", "name": "CREPE tiny", "rate": 0.35, "note": "classic neural pitch model, small"},
-        {"key": "crepe-full", "name": "CREPE full", "rate": 5.0, "note": "most accurate CREPE, slow without a GPU"},
-    ],
-    "lead": [
-        {"key": "", "name": "Keep backing vocals", "rate": 0.0, "note": ""},
-        {"key": "kara2", "name": "UVR MDX Karaoke 2", "rate": 1.2, "note": "removes backing vocals"},
-        {"key": "melkara", "name": "MelBand RoFormer Karaoke", "rate": 6.0, "note": "removes backing vocals, cleaner"},
-    ],
-    "notes": [
-        {"key": "singer", "name": "Like the singer", "note": "every pitch change of a held syllable becomes a ~ note"},
-        {"key": "easier", "name": "Easier", "note": "only clear, held pitch changes become extra notes"},
-        {"key": "easiest", "name": "Easiest", "note": "one note per syllable"},
-    ],
-    "base_rate": 1.0,
-}
+
 
 WEB = Path(__file__).with_name("web")
 
@@ -438,7 +413,9 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     @app.get("/api/models")
     def models():
         """Choices for the processing-options window (names, rough cost on a 4-core CPU)."""
-        return MODEL_CHOICES
+        from ..models import choices
+
+        return choices()
 
     @app.post("/api/settings/defaults")
     def save_defaults(body: OptionsIn):

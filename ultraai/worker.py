@@ -130,15 +130,21 @@ class Progress:
         threading.Thread(target=self._beat, daemon=True).start()
 
     def _rate(self, key: str) -> float:
+        from . import models
+
+        def known(k: str, group: str, model: str) -> float:  # learned on this machine, else benchmark
+            return float(self.rates.get(k) or models.rate(group, model))
+
         if key == "checks":  # extra separations + pitch models: depends on the options
-            r = sum(float(self.rates.get(f"separate:{m}", PRIOR_RATE.get(f"separate:{m}", 3.0)))
-                    for m in _env_list("ULTRAAI_SEP_CHECK") if m != self.sep)
-            return r + sum(float(PRIOR_RATE.get(f"pitch:{m}", 0.5)) for m in _env_list("ULTRAAI_PITCH_CHECK"))
-        k = f"{key}:{self.sep}" if key == "separate" else key
-        r = float(self.rates.get(k, PRIOR_RATE.get(k, 0.5)))
+            r = sum(known(f"separate:{m}", "separation", m) for m in _env_list("ULTRAAI_SEP_CHECK") if m != self.sep)
+            return r + sum(models.rate("pitch", m) for m in _env_list("ULTRAAI_PITCH_CHECK"))
+        if key == "separate":
+            return known(f"separate:{self.sep}", "separation", self.sep)
+        r = float(self.rates.get(key, PRIOR_RATE.get(key, 0.5)))
         if key == "analyse":
-            r += PRIOR_RATE.get(f"lead:{os.environ.get('ULTRAAI_LEAD')}", 0.0)
-            r += PRIOR_RATE.get(f"pitch:{os.environ.get('ULTRAAI_PITCH', 'swift')}", 0.0)
+            if os.environ.get("ULTRAAI_LEAD"):
+                r += models.rate("lead", os.environ["ULTRAAI_LEAD"])
+            r += models.rate("pitch", os.environ.get("ULTRAAI_PITCH", "swift"))
         return r
 
     def start(self, key: str) -> None:
@@ -227,6 +233,39 @@ def _job_logging(out: Path) -> logging.Handler:
     return h
 
 
+# background work on the server that must give way completely while a song is processed
+BACKGROUND_UNITS = os.environ.get("ULTRAAI_BACKGROUND_UNITS",
+                                  "ultraai-bench.service ultraai-library.service ultraai-after-run.service").split()
+
+
+def _systemctl(*args: str) -> str:
+    try:
+        r = subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, timeout=20)
+        return r.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def pause_background() -> list[str]:
+    """Freeze running background units (benchmarks, library runs); returns the ones *we* froze."""
+    paused = []
+    for unit in BACKGROUND_UNITS:
+        state = _systemctl("show", unit, "-p", "ActiveState", "-p", "FreezerState", "--value").split()
+        if len(state) == 2 and state[0] == "active" and state[1] == "running":
+            _systemctl("freeze", unit)
+            paused.append(unit)
+    if paused:
+        log.info("paused background work while processing: %s", ", ".join(paused))
+    return paused
+
+
+def resume_background(units: list[str]) -> None:
+    for unit in units:
+        _systemctl("thaw", unit)
+    if units:
+        log.info("resumed background work: %s", ", ".join(units))
+
+
 def process(job: Path) -> dict:
     job = Path(job)
     spec = json.loads((job / "job.json").read_text(encoding="utf-8"))
@@ -238,6 +277,7 @@ def process(job: Path) -> dict:
     write_status(job, "queued", stage="Waiting for the server (another song is being processed)")
     try:
         with _Lock(CACHE_DIR / "worker.lock"):
+            paused = pause_background()
             try:
                 result = _process(job, spec, out)
             except Exception as exc:  # noqa: BLE001 - reported to the Studio
@@ -247,6 +287,8 @@ def process(job: Path) -> dict:
                 write_status(job, "error", error=f"{type(exc).__name__}: {exc}",
                              traceback=traceback.format_exc()[-3000:])
                 raise
+            finally:
+                resume_background(paused)
         return result
     finally:
         logging.getLogger().removeHandler(handler)
