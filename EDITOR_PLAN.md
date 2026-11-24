@@ -32,7 +32,7 @@ from a near-finished song and **leads you to the problems**.
 - Every song with its status: `queued → separating → transcribing → aligning → needs review (n
   issues) → reviewed → exported`, plus `needs lyrics`, `failed`.
 - Trust score per song; sort by "most issues first".
-- **Add song**: paste a YouTube link (yt-dlp runs on the laptop; artist/title guessed from the
+- **Add song**: paste a YouTube link (yt-dlp runs on the Studio machine; artist/title guessed from the
   video, editable), or pick/drop audio files or a folder.  Language auto-detected, editable.
 - **Missing lyrics**: a paste box on the song; prefilled with Whisper's transcript as a draft.
   Saving re-runs only the cheap steps (seconds, everything else is cached).
@@ -80,13 +80,13 @@ until e.g. 80 % of wrong lines are flagged while flagging < 20 % of lines.
 Every edit is logged (before/after).  Corrections become training/eval data: e.g. a learned
 timing-refinement model, and better issue scoring.
 
-## 4. Technical shape: laptop studio + remote worker
+## 4. Technical shape: Studio app + remote worker
 
-YouTube blocks the server ("sign in to confirm you're not a bot", checked 2026-11-22), so
-downloading must happen at home.  Split:
+YouTube blocks many datacenter IPs ("sign in to confirm you're not a bot"), so
+downloading must happen on a machine with a regular connection.  Split:
 
 ```
- laptop (home network)                          server (Oracle ARM, 80 % CPU slice)
+ Studio machine                                 processing server (Linux, CPU-capped slice)
  ┌───────────────────────────────┐   SSH        ┌──────────────────────────────┐
  │ UltraAI Studio                │ ───────────▶ │ ultraai worker               │
  │  - web UI on localhost        │  push audio  │  separation, Whisper,        │
@@ -96,17 +96,17 @@ downloading must happen at home.  Split:
  └───────────────────────────────┘              └──────────────────────────────┘
 ```
 
-- **Studio** (laptop): small Python app (FastAPI) serving the browser UI on localhost; owns the
+- **Studio** (your PC): small Python app (FastAPI) serving the browser UI on localhost; owns the
   song library as plain USDX folders, so the game can read them directly.
 - **Processor** is pluggable: `remote-ssh` (default: uses your existing SSH key/config, copies
   audio up with rsync, runs `ultraai process` there, copies back txt + sidecar + a compressed
-  vocals track and pitch curve for the editor) or `local` (same code on the laptop, slow).
+  vocals track and pitch curve for the editor) or `local` (same code on the Studio machine, slow).
   Later: WireGuard instead of SSH changes nothing but the host name.
 - Editing needs no server: works offline once a song is processed.  "Re-run with new lyrics"
   sends a small job; the server still has the cached stems, so it takes seconds.
 - Frontend: TypeScript single-page app, canvas for the timeline/preview, Web Audio for
-  playback/speed.  Shipped pre-built inside the Studio package (no Node needed on the laptop).
-- Laptop is **Windows**: Studio ships as one installer/.exe (PyInstaller) that opens its own
+  playback/speed.  Shipped pre-built inside the Studio package (no Node needed on the Studio machine).
+- The Studio machine is **Windows**: Studio ships as one installer/.exe (PyInstaller) that opens its own
   app window (pywebview, Edge WebView2 which Windows already has) — looks like a desktop
   app, is the web UI inside; a normal browser tab works too.  Bundled: ffmpeg, yt-dlp + its
   JS runtime (deno).  SSH via Windows' built-in OpenSSH and your existing key; file transfer
@@ -166,16 +166,16 @@ Retrain when the library run has finished (3x the data), and later on the user's
   - API: songs list/import (files, URL)/meta/lyrics/reprocess/delete, editor doc get/put
     (versioned, validated), issue dismiss, mark reviewed, media with HTTP ranges, settings,
     connection test.  Mutations need header `X-UltraAI: 1`.
-- Laptop install needs no AI libraries: base package = Studio; `pip install .[worker]` on the
+- The Studio install needs no AI libraries: base package = Studio; `pip install .[worker]` on the
   server.  Verified in a clean venv (no numpy/torch imported).
 - Tests: fake-server end to end (upload -> remote job -> review -> edit -> versions; missing
   lyrics -> paste -> reprocess), real run on the server (cached song: 13 s).
 - Not yet: the editor UI (phase 3; a placeholder list page exists), Windows installer
-  (needs a Windows build: PyInstaller cannot cross-compile; GitHub Actions or your laptop).
+  (needs a Windows build: PyInstaller cannot cross-compile; GitHub Actions or any Windows machine).
 
 ## Phase 3 result (2026-11-23): editor UI
 
-Plain ES modules in `ultraai/studio/web/` (no build step, no Node on the laptop):
+Plain ES modules in `ultraai/studio/web/` (no build step, no Node on the Studio machine):
 `main.js` (router, library board, imports, settings, lyrics dialog), `editor.js` (editor),
 `timeline.js` (piano roll + overview), `preview.js` (game-style preview), `model.js` (line text
 / syllables / pitch snapping), `api.js`, `app.css` (light + dark via `light-dark()`).
