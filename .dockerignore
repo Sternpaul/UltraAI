@@ -1,0 +1,27 @@
+# Keep the image build context small — mirror .gitignore.
+.git
+.venv
+__pycache__
+*.py[cod]
+*.egg-info
+/songs/
+/work/
+/out/
+/library/
+/jobs/
+/dist/
+/build/
+*.pkl.prev
+ultraai/issue_model.prev.pkl
+*.wav
+*.m4a
+*.mp3
+/packaging/tools/
+
+# Not needed inside the image (the Dockerfile only COPYs pyproject.toml + ultraai/).
+/.github
+/docs
+/scripts
+/tests
+/packaging
+*.md
