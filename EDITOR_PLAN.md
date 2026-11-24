@@ -82,11 +82,11 @@ timing-refinement model, and better issue scoring.
 
 ## 4. Technical shape: Studio app + remote worker
 
-YouTube blocks many datacenter IPs ("sign in to confirm you're not a bot", checked 2026-11-22), so
+YouTube blocks many datacenter IPs ("sign in to confirm you're not a bot"), so
 downloading must happen on a machine with a regular connection.  Split:
 
 ```
- Studio machine                          server (processing server (Linux, CPU-capped slice))
+ Studio machine                                 processing server (Linux, CPU-capped slice)
  ┌───────────────────────────────┐   SSH        ┌──────────────────────────────┐
  │ UltraAI Studio                │ ───────────▶ │ ultraai worker               │
  │  - web UI on localhost        │  push audio  │  separation, Whisper,        │
@@ -96,7 +96,7 @@ downloading must happen on a machine with a regular connection.  Split:
  └───────────────────────────────┘              └──────────────────────────────┘
 ```
 
-- **Studio** (Studio machine): small Python app (FastAPI) serving the browser UI on localhost; owns the
+- **Studio** (your PC): small Python app (FastAPI) serving the browser UI on localhost; owns the
   song library as plain USDX folders, so the game can read them directly.
 - **Processor** is pluggable: `remote-ssh` (default: uses your existing SSH key/config, copies
   audio up with rsync, runs `ultraai process` there, copies back txt + sidecar + a compressed
@@ -106,7 +106,7 @@ downloading must happen on a machine with a regular connection.  Split:
   sends a small job; the server still has the cached stems, so it takes seconds.
 - Frontend: TypeScript single-page app, canvas for the timeline/preview, Web Audio for
   playback/speed.  Shipped pre-built inside the Studio package (no Node needed on the Studio machine).
-- Studio machine is **Windows**: Studio ships as one installer/.exe (PyInstaller) that opens its own
+- The Studio machine is **Windows**: Studio ships as one installer/.exe (PyInstaller) that opens its own
   app window (pywebview, Edge WebView2 which Windows already has) — looks like a desktop
   app, is the web UI inside; a normal browser tab works too.  Bundled: ffmpeg, yt-dlp + its
   JS runtime (deno).  SSH via Windows' built-in OpenSSH and your existing key; file transfer
@@ -166,7 +166,7 @@ Retrain when the library run has finished (3x the data), and later on the user's
   - API: songs list/import (files, URL)/meta/lyrics/reprocess/delete, editor doc get/put
     (versioned, validated), issue dismiss, mark reviewed, media with HTTP ranges, settings,
     connection test.  Mutations need header `X-UltraAI: 1`.
-- Studio machine install needs no AI libraries: base package = Studio; `pip install .[worker]` on the
+- The Studio install needs no AI libraries: base package = Studio; `pip install .[worker]` on the
   server.  Verified in a clean venv (no numpy/torch imported).
 - Tests: fake-server end to end (upload -> remote job -> review -> edit -> versions; missing
   lyrics -> paste -> reprocess), real run on the server (cached song: 13 s).

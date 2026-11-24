@@ -134,7 +134,7 @@ ultraai/
 eval/       (benchmark against existing hand-made songs)
 ```
 
-**Hardware note:** a small CPU-only server is enough. Everything runs on CPU, but expect a few minutes per song for separation (RoFormer is the slowest step) and a bit less for alignment. That's fine for overnight batches. A machine with an NVIDIA GPU would make it ~10× faster.
+**Hardware note:** a small CPU-only Linux server is enough. Expect a few minutes per song for separation (RoFormer is the slowest step) and a bit less for alignment — fine for overnight batches. A machine with a GPU is ~10× faster.
 
 ## 5. Evaluation: the secret weapon
 
@@ -164,7 +164,7 @@ Hand-made files are noisy too, so look at the distribution, not individual songs
 
 ## 7. Decisions (2026-11-21)
 
-- **Runs anywhere.** Use pure Python + `uv`, CPU by default, CUDA used automatically if present. Also ship a Docker image (multi-arch). Speed doesn't matter much.
+- **Runs anywhere.** Use pure Python + `uv`, CPU by default, CUDA used automatically if present. Also ship a multi-arch Docker image. Speed doesn't matter much.
 - **Languages:** English first, then German and Greek.
   - Hyphenation: pyphen has `en_US`, `de_DE` and `el_GR`.
   - MMS_FA aligns non-Latin scripts through romanisation (uroman), so Greek works with the same aligner.
@@ -196,11 +196,8 @@ The txt is always aligned against **the exact audio file that ships in the song 
 
 ## 8. Open questions
 
-1. **Library server:**
-   - How do we reach it (SSH host).
-   - What hardware does it have?
-   - Copy a sample here, or develop there?
-2. **USDX version** used to play. Recent builds understand `#VERSION`/`#AUDIO`; very old ones only `#MP3`, which we write anyway.
+1. **Processing / library server:** SSH host, hardware, and where the benchmark songs live.
+2. **USDX version** used to play the songs. Recent builds understand `#VERSION`/`#AUDIO`; very old ones only `#MP3`, which we write anyway.
 
 ## 9. Progress log
 
@@ -325,8 +322,8 @@ Order: 1+2 first (kills > 1 s errors), then 5, then 4 once more library songs ar
 
 ### Unattended library run
 
-- `systemd --user` service `ultraai-library` in `ultraai.slice` (CPUQuota caps it (e.g. 80 % of the machine), shared
-  by all heavy jobs).  `scripts/process_library.py`: random fixed order, resumable, M2 + M3 per song,
+- `systemd --user` service `ultraai-library` in `ultraai.slice` (CPUQuota caps it, e.g. 80 % of the
+  machine, shared by all heavy jobs).  `scripts/process_library.py`: random fixed order, resumable, M2 + M3 per song,
   results in `out/library/results.jsonl`, deletes mix/instrumental wavs after each song.
 - Status: `.venv/bin/python scripts/library_status.py`, log `out/library/progress.log`.
   ~14 min/song → ~3 days for 294 songs.
