@@ -293,9 +293,10 @@ def convert(track: Track, out_root: Path, separation: str, lead: str | None, gre
     if lead:
         lead_vocals(separate(track.path, separation)[0], lead)
 
-    import os
     if lead:
-        os.environ["ULTRAAI_LEAD"] = lead
+        import os
+        from . import config
+        os.environ[config.env_of("lead")] = lead
     if method == "m3":
         song, info = generate_sung(track.path, cands, code, meta, separation=separation)
         source += f", version {info['candidate'] + 1}/{info['candidates']}, structure {info['structure']}"

@@ -24,6 +24,7 @@ import time
 import traceback
 from pathlib import Path
 
+from . import config
 from .audio import CACHE_DIR, DEFAULT_SEPARATION
 
 STATES = ("queued", "running", "done", "needs_lyrics", "error")
@@ -83,17 +84,17 @@ PRIOR_RATE = {"separate:htdemucs": 1.6, "separate:htdemucs_ft": 5.0, "separate:m
               "lead:kara2": 1.2, "lead:melkara": 6.0,
               "pitch:swift": 0.02, "pitch:pesto": 0.25, "pitch:crepe-tiny": 0.35, "pitch:crepe-full": 5.0}
 
-# per-song options from the Studio -> environment of this (one-job) process
-OPTION_ENV = {"pitch": "ULTRAAI_PITCH", "pitch_check": "ULTRAAI_PITCH_CHECK", "sep_check": "ULTRAAI_SEP_CHECK",
-              "lead": "ULTRAAI_LEAD", "notes": "ULTRAAI_NOTES"}
+# per-song options from the Studio (job.json) -> environment of this (one-job) process
+OPTION_KEYS = ("pitch", "pitch_check", "sep_check", "lead", "notes")
 
 
 def apply_options(spec: dict) -> dict:
     opts = dict(spec.get("options") or {})
-    for k, env in OPTION_ENV.items():
+    for k in OPTION_KEYS:
         v = opts.get(k)
         if isinstance(v, list):
             v = ",".join(v)
+        env = config.env_of(k)
         if v:
             os.environ[env] = str(v)
         else:
@@ -102,8 +103,8 @@ def apply_options(spec: dict) -> dict:
 RATES_FILE = CACHE_DIR / "stage_rates.json"
 
 
-def _env_list(name: str) -> list[str]:
-    return [m.strip() for m in os.environ.get(name, "").split(",") if m.strip()]
+def _env_list(key: str) -> list[str]:
+    return config.get_list(key)
 _current: "Progress | None" = None
 
 
@@ -136,15 +137,15 @@ class Progress:
             return float(self.rates.get(k) or models.rate(group, model))
 
         if key == "checks":  # extra separations + pitch models: depends on the options
-            r = sum(known(f"separate:{m}", "separation", m) for m in _env_list("ULTRAAI_SEP_CHECK") if m != self.sep)
-            return r + sum(models.rate("pitch", m) for m in _env_list("ULTRAAI_PITCH_CHECK"))
+            r = sum(known(f"separate:{m}", "separation", m) for m in _env_list("sep_check") if m != self.sep)
+            return r + sum(models.rate("pitch", m) for m in _env_list("pitch_check"))
         if key == "separate":
             return known(f"separate:{self.sep}", "separation", self.sep)
         r = float(self.rates.get(key, PRIOR_RATE.get(key, 0.5)))
         if key == "analyse":
-            if os.environ.get("ULTRAAI_LEAD"):
-                r += models.rate("lead", os.environ["ULTRAAI_LEAD"])
-            r += models.rate("pitch", os.environ.get("ULTRAAI_PITCH", "swift"))
+            if config.get("lead"):
+                r += models.rate("lead", config.get("lead"))
+            r += models.rate("pitch", config.get("pitch"))
         return r
 
     def start(self, key: str) -> None:
@@ -234,8 +235,7 @@ def _job_logging(out: Path) -> logging.Handler:
 
 
 # background work on the server that must give way completely while a song is processed
-BACKGROUND_UNITS = os.environ.get("ULTRAAI_BACKGROUND_UNITS",
-                                  "ultraai-bench.service ultraai-library.service ultraai-after-run.service").split()
+BACKGROUND_UNITS = config.get("background_units").split()  # read once at import (see config.py)
 
 
 def _systemctl(*args: str) -> str:
@@ -320,8 +320,8 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
     separate(audio, sep, need_instrumental=False)
     pr.start("analyse")
     a = analyse(audio, sep)
-    pitch_checks = [m for m in _env_list("ULTRAAI_PITCH_CHECK") if m != os.environ.get("ULTRAAI_PITCH", "swift")]
-    sep_checks = [m for m in _env_list("ULTRAAI_SEP_CHECK") if m != sep]
+    pitch_checks = [m for m in _env_list("pitch_check") if m != config.get("pitch")]
+    sep_checks = [m for m in _env_list("sep_check") if m != sep]
     if pitch_checks or sep_checks:
         from .generate import pitch_track
         from .audio import load_mono
@@ -331,7 +331,7 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
             pitch_track(a.vocals, a.wave, m)
         for m in sep_checks:
             v2, _ = separate(audio, m, need_instrumental=False)
-            pitch_track(v2, load_mono(v2, 16000), os.environ.get("ULTRAAI_PITCH", "swift"))
+            pitch_track(v2, load_mono(v2, 16000), config.get("pitch"))
     else:
         pr.skip("checks", "not chosen")
     # lyrics: user-supplied, else LRCLIB

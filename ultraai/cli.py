@@ -44,13 +44,19 @@ def _eval(args) -> int:
     if args.only:
         cases = [c for c in cases if any(o.lower() in c.name.lower() for o in args.only)]
     if args.cached_only:
-        import os
-
+        from . import config
         from .generate import is_cached
-        sep = os.environ.get("ULTRAAI_SEPARATION", "htdemucs")
+        sep = config.get("separation", default="htdemucs")  # historical default of this subcommand
         cases = [c for c in cases if c.audio and is_cached(c.audio, sep)]
     gen = harness.GENERATORS[args.generator]
     harness.run(gen, cases, Path(args.out) / args.generator)
+    return 0
+
+
+def _config(args) -> int:
+    from . import config
+
+    print(config.table())
     return 0
 
 
@@ -153,6 +159,10 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--cached-only", action="store_true",
                    help="only songs whose vocals/emissions are already cached (fast dev loop)")
     c.set_defaults(func=_eval)
+
+    c = sub.add_parser("config", help="list all ULTRAAI_* options, their defaults and doc strings")
+    c.add_argument("cmd", nargs="?", default="list", choices=["list"])
+    c.set_defaults(func=_config)
 
     c = sub.add_parser("process", help="process one Studio job folder (job.json -> out/)")
     c.add_argument("job")
