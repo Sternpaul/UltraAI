@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from . import align as aligner
+from . import config
 from .audio import DEFAULT_SEPARATION, load_mono, separate
 from .lyrics import Lyrics
 from .pitch import PitchTrack, track
@@ -71,21 +72,17 @@ def _pitch(p: PitchTrack, start: float, end: float, fallback: int) -> int:
     return int(round(float(np.median(seg))))
 
 
-MELISMA = __import__("os").environ.get("ULTRAAI_MELISMA", "1") == "1"
-MIN_SEG_S = float(__import__("os").environ.get("ULTRAAI_MINSEG", 0.15))
 MIN_MELISMA_SYL_S = 0.3
-MAX_SEGMENTS = int(__import__("os").environ.get("ULTRAAI_MAXSEG", 6))
-
-
-NOTE_STYLES = {           # min note length within a syllable, min pitch step between its notes
-    "singer": (MIN_SEG_S, 1),   # follow the voice
-    "easier": (0.3, 3),         # only clear, held changes become extra notes
-    "easiest": None,            # one note per syllable
-}
 
 
 def note_style() -> tuple[float, int] | None:
-    return NOTE_STYLES.get(__import__("os").environ.get("ULTRAAI_NOTES", "singer"), NOTE_STYLES["singer"])
+    """(min note length within a syllable, min pitch step between its notes) per ULTRAAI_NOTES."""
+    name = config.get("notes")
+    if name == "easiest":                            # one note per syllable
+        return None
+    if name == "easier":                              # only clear, held changes become extra notes
+        return (0.3, 3)
+    return (config.get_float("minseg"), 1)            # "singer": follow the voice
 
 
 def _segments(p: PitchTrack, start: float, end: float, min_seg_s: float | None = None,
@@ -119,13 +116,13 @@ def _segments(p: PitchTrack, start: float, end: float, min_seg_s: float | None =
             runs[-1][2] = i
         else:
             runs.append([v, i, i])
-    min_frames = max(1, int((min_seg_s or MIN_SEG_S) / p.frame))
+    min_frames = max(1, int((min_seg_s if min_seg_s is not None else config.get_float("minseg")) / p.frame))
     # absorb short runs into the longer neighbour until all are long enough and, for long
     # wobbly notes ("whoooah"), until at most MAX_SEGMENTS remain (the main steps survive)
     while len(runs) > 1:
         lens = [r[2] - r[1] + 1 for r in runs]
         k = int(np.argmin(lens))
-        if lens[k] >= min_frames and len(runs) <= max(MAX_SEGMENTS, int((end - start) / 0.35)):
+        if lens[k] >= min_frames and len(runs) <= max(config.get_int("maxseg"), int((end - start) / 0.35)):
             break
         if k == 0:
             j = 1
@@ -181,7 +178,7 @@ def build_syllables(lyrics: Lyrics, words: list[aligner.AlignedWord], p: PitchTr
         s.stability = float(np.subtract(*np.percentile(seg, [75, 25]))) if len(seg) >= 4 else 99.0
         s.pitch = prev = _pitch(p, s.start, s.end, prev)
         style = note_style()
-        if MELISMA and style is not None and s.end - s.start >= MIN_MELISMA_SYL_S:
+        if config.get_bool("melisma") and style is not None and s.end - s.start >= MIN_MELISMA_SYL_S:
             seg = _segments(p, s.start, s.end, *style)
             if len(seg) > 1:
                 s.segments = seg
@@ -260,14 +257,6 @@ def _fold(p: float, ref: float) -> float:
     return p
 
 
-_E = __import__("os").environ
-HARMONIZE_AGREE = float(_E.get("ULTRAAI_HARM_AGREE", 0.6))  # share of syllables agreeing with the group
-HARMONIZE_TOL = int(_E.get("ULTRAAI_HARM_TOL", 2))          # semitones
-HARMONIZE_MIN_SYL = int(_E.get("ULTRAAI_HARM_MIN", 1))      # shorter lines ("oh") are not grouped
-HARMONIZE_MELISMA = _E.get("ULTRAAI_HARM_MELISMA", "0") == "1"  # also unify melisma shapes
-HARMONIZE_MODE = _E.get("ULTRAAI_HARM_MODE", "pool")  # pool: most common sung note over all repeats
-
-
 def _pooled_pitch(p: PitchTrack, spans: list[tuple[float, float]]) -> int | None:
     """Most common semitone over the voiced frames of all spans (octave-folded together)."""
     frames = []
@@ -295,26 +284,26 @@ def harmonize_repeats(syl: list[Syllable], proposals: list | None = None, pitch:
     changed = 0
     for group in _line_groups(syl):
         n = len(group[0])
-        if n < HARMONIZE_MIN_SYL:
+        if n < config.get_int("harm_min"):
             continue
         consensus = []
         for k in range(n):
             ps = [occ[k].pitch for occ in group if occ[k].voiced >= 0.3] or [occ[k].pitch for occ in group]
             ref = float(np.median(ps))
             c = int(round(float(np.median([_fold(p_, ref) for p_ in ps]))))
-            if pitch is not None and HARMONIZE_MODE == "pool":
+            if pitch is not None and config.get("harm_mode") == "pool":
                 c = _pooled_pitch(pitch, [(occ[k].start, occ[k].end) for occ in group]) or c
             consensus.append(c)
         best = max(group, key=lambda occ: float(np.mean([x.voiced for x in occ])))
         odd = []
         for occ in group:
-            agree = sum(abs(_fold(occ[k].pitch, consensus[k]) - consensus[k]) <= HARMONIZE_TOL for k in range(n))
-            if agree < HARMONIZE_AGREE * n:
+            agree = sum(abs(_fold(occ[k].pitch, consensus[k]) - consensus[k]) <= config.get_int("harm_tol") for k in range(n))
+            if agree < config.get_float("harm_agree") * n:
                 odd.append(occ)
                 continue
             for k, x in enumerate(occ):
                 tpl = best[k]
-                if not HARMONIZE_MELISMA and any(o[k].segments for o in group):
+                if not config.get_bool("harm_melisma") and any(o[k].segments for o in group):
                     continue  # leave melismas as detected
                 if tpl.segments and tpl.end > tpl.start:
                     scale = (x.end - x.start) / (tpl.end - tpl.start)
@@ -357,8 +346,6 @@ def mark_note_kinds(syl: list[Syllable]) -> None:
     """Freestyle for unpitched (shouted/spoken) syllables; golden for the hard ones: notes
     reached by a big pitch jump (outliers of their line), held long enough to score, and
     the same notes in every repetition of the line."""
-    import os
-
     # freestyle only where really nothing is sung on a pitch: a long unvoiced syllable or a
     # spoken/shouted line.  A short word the pitch tracker missed ("it's") stays a normal note
     # (with its neighbour's pitch) - a freestyle note shows but gives no points.
@@ -369,7 +356,7 @@ def mark_note_kinds(syl: list[Syllable]) -> None:
         spoken_line = float(np.mean(line_voiced[s.line])) < 0.2
         if s.voiced < FREESTYLE_MAX_VOICED and (s.end - s.start >= FREESTYLE_MIN_S or spoken_line):
             s.kind = "F"
-    if os.environ.get("ULTRAAI_GOLDEN", "jumps") == "legacy":
+    if config.get("golden") == "legacy":
         return _golden_legacy(syl)
     by_line: dict[int, list[Syllable]] = {}
     for s in syl:
@@ -404,8 +391,6 @@ def _golden_legacy(syl: list[Syllable]) -> None:
         s.kind = "*"
 
 
-MAX_LINE_CHARS = int(__import__("os").environ.get("ULTRAAI_MAXC", 40))  # library: median 20 chars, p90 35
-MAX_LINE_S = float(__import__("os").environ.get("ULTRAAI_MAXS", 5.0))  # library: median 1.7 s, p90 3.3 s
 
 
 def split_lines(syl: list[Syllable]) -> None:
@@ -424,7 +409,7 @@ def split_lines(syl: list[Syllable]) -> None:
         if len(ws) < 2:
             return [ws]
         dur = ws[-1][-1].end - ws[0][0].start
-        if len(text(ws)) <= MAX_LINE_CHARS and dur <= MAX_LINE_S:
+        if len(text(ws)) <= config.get_int("maxc") and dur <= config.get_float("maxs"):
             return [ws]
         total = len(text(ws))
         best, best_k = None, None
@@ -527,13 +512,11 @@ def analyse(audio: Path, separation: str = DEFAULT_SEPARATION, lead: str | None 
 
     ``lead``: optional karaoke model to strip backing vocals from the vocal stem first.
     """
-    import os
-
     import torch
 
     from .audio import lead_vocals
 
-    lead = lead if lead is not None else (os.environ.get("ULTRAAI_LEAD") or None)
+    lead = lead if lead is not None else (config.get("lead") or None)
     vocals, _ = separate(audio, separation, need_instrumental=False)
     if lead:
         vocals, _ = lead_vocals(vocals, lead)
@@ -544,7 +527,7 @@ def analyse(audio: Path, separation: str = DEFAULT_SEPARATION, lead: str | None 
     else:
         em = aligner.emissions(wave)
         torch.save(em, em_cache)
-    p = pitch_track(vocals, wave, os.environ.get("ULTRAAI_PITCH", "swift"))
+    p = pitch_track(vocals, wave, config.get("pitch"))
     return Analysis(vocals, wave, em, p)
 
 
@@ -567,10 +550,8 @@ def is_cached(audio: Path, separation: str = DEFAULT_SEPARATION) -> bool:
 
 def generate(audio: Path, lyrics: Lyrics, meta: dict[str, str],
              separation: str = DEFAULT_SEPARATION) -> tuple[Song, dict]:
-    import os
-
     a = analyse(audio, separation)
-    if os.environ.get("ULTRAAI_ROBUST", "1") == "1":
+    if config.get_bool("robust"):
         words = aligner.align_robust(lyrics, a.wave, em=a.emissions)
     else:
         words = aligner.align(lyrics, a.wave, star_between="lines", em=a.emissions)
@@ -608,14 +589,12 @@ def generate_sung(audio: Path, candidates: list, language: str, meta: dict[str, 
                   separation: str = DEFAULT_SEPARATION) -> tuple[Song, dict]:
     """M3: listen first.  Whisper transcript decides which lyric version fits and what is
     actually sung (repeats, missing lines); lyrics give the spelling.  Falls back to M2."""
-    import os
-
     from .lrc import audio_duration
     from .structure import fill_times, match
     from .transcribe import transcribe
 
     a = analyse(audio, separation)
-    asr_sep = os.environ.get("ULTRAAI_ASR_SEP")  # benchmarks: one transcript for every separation
+    asr_sep = config.get("asr_sep") or None  # benchmarks: one transcript for every separation
     asr_vocals = a.vocals.with_name(f"vocals.{asr_sep}.mono16000.wav") if asr_sep else None
     if asr_vocals is not None and asr_vocals.exists():
         asr = transcribe(asr_vocals, language)
@@ -630,27 +609,27 @@ def generate_sung(audio: Path, candidates: list, language: str, meta: dict[str, 
         raise LookupError("no usable lyrics")
     # the default (M2's) version wins unless another fits the transcript clearly better;
     # a synced version wins over an unsynced one unless the latter is clearly better
-    margin = float(os.environ.get("ULTRAAI_M3_CAND_MARGIN", "0.0"))
+    margin = config.get_float("m3_cand_margin")
 
     def rank(x):
         return x[0].per_word + (margin if x[1] == 0 else 0) + (margin if x[3] is not None else 0)
     scored.sort(key=lambda x: -rank(x))
     st, k, texts, times = scored[0]
-    if times is not None and os.environ.get("ULTRAAI_M3_TIMED", "1") == "1":
+    if times is not None and config.get_bool("m3_timed"):
         off = _consensus_offset(st.lines, times)
         if off is not None:  # re-match knowing roughly when each line is sung
             st = match(texts, asr, line_times=times, offset=off)
     info: dict = {"candidate": k, "candidates": len(scored), "asr_words": st.asr_words,
                   "asr_coverage": round(st.coverage, 3), "jumps": st.jumps, "structure": "lrc"}
-    min_cov = float(os.environ.get("ULTRAAI_M3_MIN_COVERAGE", "0.5"))
+    min_cov = config.get_float("m3_min_coverage")
     heard = sum(ln.matched for ln in st.lines) / max(1, sum(ln.words for ln in st.lines))
     info["heard"] = round(heard, 3)
     trusted = False
-    if st.coverage >= min_cov and heard >= float(os.environ.get("ULTRAAI_M3_MIN_HEARD", "0.3")) \
+    if st.coverage >= min_cov and heard >= config.get_float("m3_min_heard") \
             and len(st.lines) >= 3:
         order = [ln.line for ln in st.lines]
         same = order == list(range(len(texts)))
-        mode = os.environ.get("ULTRAAI_M3_TIMES", "hybrid")
+        mode = config.get("m3_times")
         if same and times is not None and mode == "hybrid":
             info["structure"] = "lrc-confirmed"
             off = _consensus_offset(st.lines, times)
@@ -664,7 +643,7 @@ def generate_sung(audio: Path, candidates: list, language: str, meta: dict[str, 
                 st.lines = _drop_weak_repeats(st.lines)
             texts = [ln.text for ln in st.lines]
             times = fill_times(st.lines, audio_duration(audio) or len(a.wave) / 16000)
-            if lrc_times is not None and os.environ.get("ULTRAAI_M3_LRC_FILL", "1") == "1":
+            if lrc_times is not None and config.get_bool("m3_lrc_fill"):
                 times = _merge_lrc_times(st.lines, times, lrc_times)
             info["structure"] = "sung"
             trusted = True
@@ -677,7 +656,7 @@ def generate_sung(audio: Path, candidates: list, language: str, meta: dict[str, 
             seen.add(ln.line)
     asr_words = [w for seg in asr for w in seg.words]
     song, more = generate_from_lines(audio, texts, times, language, meta, separation,
-                                     trusted=trusted and os.environ.get("ULTRAAI_M3_TRUST", "1") == "1",
+                                     trusted=trusted and config.get_bool("m3_trust"),
                                      asr_words=asr_words, line_flags=flags)
     more.update(info)
     return song, more
@@ -782,10 +761,8 @@ def _rms_db(wave, s: Syllable) -> float:
     return 20 * float(np.log10(np.sqrt(np.mean(seg ** 2)) + 1e-9)) if len(seg) else -120.0
 
 
-def _models(env: str) -> list[str]:
-    import os
-
-    return [m.strip() for m in os.environ.get(env, "").split(",") if m.strip()]
+def _models(key: str) -> list[str]:
+    return config.get_list(key)
 
 
 def _pitch_name(m: str) -> str:
@@ -801,13 +778,11 @@ def double_check_issues(audio: Path, separation: str, syl: list[Syllable], a) ->
     ULTRAAI_SEP_CHECK=m1,m2,...: more vocal separations - syllables that are clearly sung in
       one separation but (nearly) silent or on another pitch in another are marked (backing
       vocals, instruments or noise that one model let through)."""
-    import os
-
     from .models import name as model_name
 
-    main_pitch = os.environ.get("ULTRAAI_PITCH", "swift")
+    main_pitch = config.get("pitch")
     out = []
-    checks = [m for m in _models("ULTRAAI_PITCH_CHECK") + _models("ULTRAAI_PITCH2") if m != main_pitch]
+    checks = [m for m in _models("pitch_check") + _models("pitch2") if m != main_pitch]
     others = {m: pitch_track(a.vocals, a.wave, m) for m in dict.fromkeys(checks)}
     if others:
         for s in syl:
@@ -821,7 +796,7 @@ def double_check_issues(audio: Path, separation: str, syl: list[Syllable], a) ->
                 who = ", ".join(f"{_pitch_name(m)} {round(v)}" for m, v in bad.items())
                 out.append(_note_issue("models_pitch", s, 0.6 + min(0.25, 0.05 * (d - 2)) + 0.05 * (len(bad) - 1),
                                        f"pitch models disagree with {_pitch_name(main_pitch)} – semitones off: {who}"))
-    seps = [m for m in _models("ULTRAAI_SEP_CHECK") + _models("ULTRAAI_SEP2") if m != separation]
+    seps = [m for m in _models("sep_check") + _models("sep2") if m != separation]
     for s2 in dict.fromkeys(seps):
         v2, _ = separate(audio, s2, need_instrumental=False)
         w2 = load_mono(v2, aligner.SR)
@@ -894,8 +869,6 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
 
     ``trusted``: the times were checked against the audio (transcript), so anchor to them
     even when the free alignment is too poor to confirm them."""
-    import os
-
     from .lyrics import prepare
 
     lyrics = prepare(texts, language)
@@ -922,11 +895,11 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
                     line_flags = line_flags[:len(keep)]
                 lyrics = prepare(texts, language)
                 words = free = aligner.align(lyrics, a.wave, star_between="lines", em=a.emissions)
-            if os.environ.get("ULTRAAI_REPAIR", "1") == "1":
+            if config.get_bool("repair"):
                 times, info["repaired_lines"] = aligner.repair_anchors(
                     lyrics, words, times, offsets,
-                    min_conf=float(os.environ.get("ULTRAAI_REPAIR_CONF", "0.15")),
-                    window=float(os.environ.get("ULTRAAI_REPAIR_SHIFT", "3.0")))
+                    min_conf=config.get_float("repair_conf"),
+                    window=config.get_float("repair_shift"))
             for window in (aligner.ANCHOR_WINDOW_S, 3.0, 6.0):
                 try:
                     words = aligner.align_anchored(lyrics, a.emissions, times, offsets, window=window)
@@ -943,7 +916,7 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
     syl, info["dropped_vocable_lines"] = drop_unsung_vocables(syl)
     split_lines(syl)
     proposals: list = []
-    if os.environ.get("ULTRAAI_HARMONIZE", "1") == "1":
+    if config.get_bool("harmonize"):
         info["harmonized_lines"] = harmonize_repeats(syl, proposals, a.pitch)
     mark_note_kinds(syl)
     info["lines"] = line_report(syl)
@@ -952,7 +925,7 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
     info["issues"] += double_check_issues(audio, separation, syl, a)
     info["issues"] = sorted(info["issues"] + _repeat_issues(proposals), key=lambda i: -i["risk"])
     grid = None
-    if os.environ.get("ULTRAAI_TEMPO", "1") == "1":
+    if config.get_bool("tempo"):
         from .audio import work_dir
         from .tempo import choose_grid, detect_beats
 

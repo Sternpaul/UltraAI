@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
+from . import config
 from .lyrics import clean_lines
 from .transcribe import AsrSegment
 
@@ -212,9 +213,6 @@ def match(lyric_lines: list[str], asr: list[AsrSegment], line_times: list[float]
 
 
 SECONDS_PER_WORD_MIN = 0.2
-DROP = __import__("os").environ.get("ULTRAAI_STRUCT_DROP", "0") == "1"
-
-
 def _drop_impossible(lines: list[SungLine]) -> list[SungLine]:
     """Unheard lines squeezed between two heard lines with no time for them are not sung here
     (e.g. a verse the radio edit cuts).  Unheard lines with room for them are kept."""
@@ -232,7 +230,7 @@ def _drop_impossible(lines: list[SungLine]) -> list[SungLine]:
         prev_end = out[-1].end if out else None
         next_start = lines[j].start if j < len(lines) else None
         words = sum(ln.words for ln in run)
-        if DROP and prev_end is not None and next_start is not None \
+        if config.get_bool("struct_drop") and prev_end is not None and next_start is not None \
                 and next_start - prev_end < SECONDS_PER_WORD_MIN * words:
             pass  # no room: drop the run
         else:
