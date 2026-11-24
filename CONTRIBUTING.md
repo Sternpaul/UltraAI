@@ -10,6 +10,7 @@ the pipeline is judged by numbers on the benchmark songs, not by gut feeling (se
 git clone https://github.com/Sternpaul/UltraAI.git && cd UltraAI
 python3 -m venv .venv && .venv/bin/pip install -e ".[worker,dev]"   # worker = server, dev = pytest
 .venv/bin/pytest                                                     # tests (no models or songs needed)
+# lighter, no torch (what CI uses): pip install -e ".[dev,test]" && pytest   # 29 passed, 3 skipped
 ```
 
 - The **Studio** (laptop app) needs only the base package: `pip install -e .` — no
