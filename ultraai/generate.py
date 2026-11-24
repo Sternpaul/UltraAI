@@ -21,7 +21,9 @@ from .audio import DEFAULT_SEPARATION, load_mono, separate
 from .lyrics import Lyrics
 from .onsets import onsets_for, snap_words_to_onsets
 from .pitch import PitchTrack, track
+from .pitchfit import fit_syllables
 from .ultrastar.model import Line, Note, Song, format_number
+from .video import apply_videogap
 
 log = logging.getLogger(__name__)
 
@@ -594,8 +596,10 @@ def generate(audio: Path, lyrics: Lyrics, meta: dict[str, str],
     else:
         words = aligner.align(lyrics, a.wave, star_between="lines", em=a.emissions)
     syl = build_syllables(lyrics, words, a.pitch)
-    song = to_song(syl, meta, audio.name)
+    fit_syllables(syl, a.pitch)  # keysnap / octave_range (B5b): no-op with the defaults
     debug = {"word_scores": [w.score for w in words]}
+    song = to_song(syl, meta, audio.name)
+    apply_videogap(song, audio, debug)  # #VIDEOGAP (B5b): no-op without a sibling video
     return song, debug
 
 
@@ -995,6 +999,10 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
         _add_issues(info, syl, free, expected, asr_words, line_flags, lyrics, a.pitch)
         info["issues"] += double_check_issues(audio, separation, syl, a)
         info["issues"] = sorted(info["issues"] + _repeat_issues(proposals), key=lambda i: -i["risk"])
+
+        # B5b: final pitch fit (keysnap / octave range, both off by default) — after the
+        # last pitch change (double-check auto-fix), before the song is built; timing untouched
+        info["pitch_fit"] = fit_syllables(syl, a.pitch)
         grid = None
         if config.get_bool("tempo"):
             from .audio import work_dir
@@ -1009,4 +1017,6 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
             onsets, strengths = load_onsets(mix)
             grid = choose_grid(tempo, beats, syl[0].start, onsets=onsets, strengths=strengths)
             info["tempo"] = grid.tempo
-        return to_song(syl, meta, audio.name, grid), info
+        song = to_song(syl, meta, audio.name, grid)
+        apply_videogap(song, audio, info)  # #VIDEOGAP (B5b): only when a sibling video exists
+        return song, info
