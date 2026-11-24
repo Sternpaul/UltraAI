@@ -217,7 +217,7 @@ class ShellTransport(SshTransport):
 
 # started detached on the server: in the CPU-capped slice if systemd is there, else nohup
 REMOTE_START = ("cd {dir} && if command -v systemd-run >/dev/null && systemd-run --user --quiet --collect "
-                "--slice=ultraai.slice --unit=ultraai-job-{id} -p CPUWeight=1000 -p WorkingDirectory=\"$PWD\" "
+                "--slice=ultraai.slice --unit=ultraai-job-{id} -p CPUWeight=10000 -p WorkingDirectory=\"$PWD\" "
                 "{ultraai} process jobs/{id} 2>/dev/null; then true; else "
                 "nohup {ultraai} process jobs/{id} > jobs/{id}/log.txt 2>&1 < /dev/null & fi")
 

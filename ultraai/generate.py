@@ -789,9 +789,9 @@ def _models(env: str) -> list[str]:
 
 
 def _pitch_name(m: str) -> str:
-    from .pitch import PITCH_MODELS
+    from .models import name
 
-    return PITCH_MODELS.get(m, m)
+    return name("pitch", m)
 
 
 def double_check_issues(audio: Path, separation: str, syl: list[Syllable], a) -> list[dict]:
@@ -803,7 +803,7 @@ def double_check_issues(audio: Path, separation: str, syl: list[Syllable], a) ->
       vocals, instruments or noise that one model let through)."""
     import os
 
-    from .audio import SEPARATION_NAMES
+    from .models import name as model_name
 
     main_pitch = os.environ.get("ULTRAAI_PITCH", "swift")
     out = []
@@ -826,7 +826,7 @@ def double_check_issues(audio: Path, separation: str, syl: list[Syllable], a) ->
         v2, _ = separate(audio, s2, need_instrumental=False)
         w2 = load_mono(v2, aligner.SR)
         p2 = pitch_track(v2, w2, main_pitch)
-        name = SEPARATION_NAMES.get(s2, s2)
+        name = model_name("separation", s2)
         for s in syl:
             e1, e2 = _rms_db(a.wave, s), _rms_db(w2, s)
             if max(e1, e2) > -40 and abs(e1 - e2) >= 15:
