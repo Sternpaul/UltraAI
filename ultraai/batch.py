@@ -246,6 +246,41 @@ REPORT_FIELDS = ["file", "artist", "title", "status", "lyrics_source", "language
                  "lines", "low_confidence_lines", "seconds", "folder", "note"]
 
 
+def _norm_row(row: dict) -> dict:
+    """A row as it is read back from CSV: every field a string, missing ones empty."""
+    return {f: "" if row.get(f) is None else str(row.get(f, "")) for f in REPORT_FIELDS}
+
+
+def load_report(report: Path) -> dict[str, dict]:
+    """Existing report rows keyed by the "file" column (a re-run appends, so the last row wins)."""
+    if not report.exists() or report.stat().st_size == 0:
+        return {}
+    with open(report, newline="", encoding="utf-8") as f:
+        return {r["file"]: r for r in csv.DictReader(f) if r.get("file")}
+
+
+def append_report_row(report: Path, row: dict, existing: dict[str, dict]) -> bool:
+    """Append one song's row to report.csv — O(1) per song instead of rewriting every row.
+
+    The header is written only when the file is new.  ``existing`` is the report as
+    returned by load_report() and is updated in place.  A row identical to the stored
+    one for the same song is not appended again, so resuming never duplicates rows.
+    Returns True when a row was written.
+    """
+    key = str(row.get("file", ""))
+    norm = _norm_row(row)
+    if existing.get(key) == norm:
+        return False
+    fresh = not report.exists() or report.stat().st_size == 0
+    with open(report, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=REPORT_FIELDS, extrasaction="ignore")
+        if fresh:
+            w.writeheader()
+        w.writerow(row)
+    existing[key] = norm
+    return True
+
+
 def convert(track: Track, out_root: Path, separation: str, lead: str | None, greek_script: bool,
             stems: bool, method: str = "m3") -> dict:
     from .audio import lead_vocals, separate
@@ -324,13 +359,8 @@ def run_batch(src: Path, out_root: Path, separation: str = "melband", lead: str 
     out_root.mkdir(parents=True, exist_ok=True)
     files = sorted(p for p in Path(src).rglob("*") if p.suffix.lower() in AUDIO_EXT)
     report = out_root / "report.csv"
-    done = set()
-    rows: list[dict] = []
-    if report.exists() and not force:
-        with open(report, newline="", encoding="utf-8") as f:
-            rows = list(csv.DictReader(f))
-        done = {r["file"] for r in rows if r.get("status") == "ok"}
-        rows = [r for r in rows if r["file"] in done]
+    existing = load_report(report)
+    done = set() if force else {k for k, r in existing.items() if r.get("status") == "ok"}
     print(f"{len(files)} audio files, {len(done)} already converted")
     for k, path in enumerate(files, 1):
         if str(path) in done:
@@ -347,9 +377,5 @@ def run_batch(src: Path, out_root: Path, separation: str = "melband", lead: str 
         row["seconds"] = round(time.time() - t0)
         print(f"   -> {row['status']} ({row.get('lyrics_source', '')}, {row.get('language', '')}, "
               f"anchored={row.get('anchored', '')}, {row['seconds']} s) {row.get('note', '')}")
-        rows.append(row)
-        with open(report, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=REPORT_FIELDS, extrasaction="ignore")
-            w.writeheader()
-            w.writerows(rows)
+        append_report_row(report, row, existing)
     return report
