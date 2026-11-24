@@ -22,13 +22,21 @@ from pathlib import Path
 
 import logging
 
+from .config import atomic_write
 from .logs import TRACE
-from .store import Library
+from .store import AUDIO_EXT, Library
 
 log = logging.getLogger("ultraai.processor")
 server_log = logging.getLogger("ultraai.server")
 FINAL = ("done", "needs_lyrics", "error")
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW: no console flashing
+
+# sid -> running child process (LocalProcessor), so POST /api/songs/{sid}/cancel can kill it
+_PROCS: dict[str, subprocess.Popen] = {}
+
+
+class Cancelled(Exception):
+    """The user cancelled this job (POST /api/songs/{sid}/cancel)."""
 
 
 def _run(argv: list[str], **kw) -> subprocess.CompletedProcess:
@@ -55,10 +63,21 @@ class Processor:
 
     def __init__(self, lib: Library, log=None, separation: str | None = None):
         self.lib, self.separation = lib, separation
+        self._cancelled: set[str] = set()
+
+    def cancel(self, sid: str) -> None:
+        """Best-effort stop of a running job (overridden by the concrete processors)."""
+        self._cancelled.add(sid)
+
+    def _was_cancelled(self, sid: str) -> bool:
+        return sid in self._cancelled
 
     def job_spec(self, sid: str, job_id: str) -> dict:
         st = self.lib.state(sid)
-        spec = {"id": job_id, "audio": "audio" + Path(st.audio).suffix.lower(), "artist": st.artist,
+        suffix = Path(st.audio).suffix.lower()
+        if suffix not in AUDIO_EXT:  # never hand an arbitrary suffix to the worker / the shell
+            raise ValueError(f"unsupported audio file type {suffix!r} ({st.audio!r})")
+        spec = {"id": job_id, "audio": "audio" + suffix, "artist": st.artist,
                 "title": st.title, "language": st.language}
         if self.separation:
             spec["separation"] = self.separation
@@ -102,15 +121,15 @@ class Processor:
             f"#AUDIO:{_job_audio(text, 'AUDIO')}", f"#AUDIO:{st.audio}")
         if txt.exists():
             self.lib.save_version(sid, txt.read_text(encoding="utf-8"), "before-reprocess")
-        txt.write_text(text, encoding="utf-8")
+        atomic_write(txt, text.encode("utf-8"))
         self.lib.save_version(sid, text, "auto")
         side = json.loads((out / "song.ultraai.json").read_text(encoding="utf-8"))
-        txt.with_suffix(".ultraai.json").write_text(json.dumps(side, ensure_ascii=False), encoding="utf-8")
+        atomic_write(txt.with_suffix(".ultraai.json"), json.dumps(side, ensure_ascii=False).encode("utf-8"))
         n = len(side.get("issues", []))
         self.lib.apply_media_headers(sid)
         self.lib.update(sid, state="needs_review", stage="", error="", issues=n, dismissed=[],
                         lyrics_source=side.get("lyrics_source", ""), job={}, lyrics_info=side.get("lyrics") or {},
-                        language=st.language or side.get("language", ""))
+                        language=st.language or side.get("language", ""), doc_version=st.doc_version + 1)
         return "needs_review"
 
 
@@ -134,13 +153,19 @@ class LocalProcessor(Processor):
         errf = open(job / "stderr.txt", "w", encoding="utf-8")  # noqa: SIM115 - a file, never a full pipe
         proc = subprocess.Popen([sys.executable, "-m", "ultraai.cli", "process", str(job)],
                                 stdout=subprocess.DEVNULL, stderr=errf, text=True, creationflags=_NO_WINDOW)
-        from ..worker import read_status
+        _PROCS[sid] = proc
+        try:
+            from ..worker import read_status
 
-        while proc.poll() is None:
-            if stage:
-                stage(progress_dict(read_status(job), upload="skipped", download="skipped"))
-            time.sleep(2.0)
-        errf.close()
+            while proc.poll() is None:
+                if stage:
+                    stage(progress_dict(read_status(job), upload="skipped", download="skipped"))
+                time.sleep(2.0)
+        finally:
+            _PROCS.pop(sid, None)
+            errf.close()
+        if self._was_cancelled(sid):
+            raise Cancelled(sid)
         st = read_status(job)
         if st.get("state") not in FINAL:
             st = {"state": "error",
@@ -148,6 +173,13 @@ class LocalProcessor(Processor):
         state = self.ingest(sid, job / "out", st)
         shutil.rmtree(job, ignore_errors=True)
         return state
+
+    def cancel(self, sid: str) -> None:
+        super().cancel(sid)
+        proc = _PROCS.get(sid)
+        if proc is not None and proc.poll() is None:
+            log.info("killing the local worker process of %s", sid)
+            proc.kill()
 
 
 class SshTransport:
@@ -231,8 +263,30 @@ class SshProcessor(Processor):
         self.t, self.dir, self.ultraai = transport, remote_dir, ultraai
 
     def check(self) -> str:
-        """Connection test for the settings page."""
-        return self.t.run(f"cd {shlex.quote(self.dir)} && {self.ultraai} --help >/dev/null && echo ok").strip()
+        """Connection test for the settings page; also reaps remote job dirs older than 24 h."""
+        self._reap_stale_jobs()
+        return self.t.run(f"cd {shlex.quote(self.dir)} && {shlex.quote(self.ultraai)} --help >/dev/null "
+                          f"&& echo ok").strip()
+
+    def _reap_stale_jobs(self) -> None:
+        """rm -rf the job dirs untouched for more than 24 h (best effort)."""
+        jobs = f"{self.dir}/jobs"
+        try:
+            self.t.run(f"find {shlex.quote(jobs)} -mindepth 1 -maxdepth 1 -type d -mmin +1440 "
+                       f"-exec rm -rf {{}} +", timeout=120)
+        except RuntimeError as exc:
+            log.warning("could not reap stale remote job dirs: %s", exc)
+
+    def cancel(self, sid: str) -> None:
+        super().cancel(sid)
+        st = self.lib.state(sid)
+        rid = st.job.get("remote_id")
+        if rid:
+            unit = f"ultraai-job-{rid}.service"
+            try:  # best effort: also covers the nohup fallback (systemctl then just fails)
+                self.t.run(f"systemctl --user stop {shlex.quote(unit)} 2>/dev/null || true", timeout=60)
+            except RuntimeError as exc:
+                log.warning("could not stop remote job %s: %s", rid, exc)
 
     def process(self, sid: str, stage=None) -> str:
         st = self.lib.state(sid)
@@ -250,9 +304,10 @@ class SshProcessor(Processor):
                 jf.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
                 self.t.put(self.lib.folder(sid) / st.audio, f"{jd}/{spec['audio']}")
                 self.t.put(jf, f"{jd}/job.json")
-            self.t.run(self.start_template.format(dir=shlex.quote(self.dir), id=job_id, ultraai=self.ultraai))
+            self.t.run(self.start_template.format(dir=shlex.quote(self.dir), id=job_id,
+                                                  ultraai=shlex.quote(self.ultraai)))
             self.lib.update(sid, job={"remote_id": job_id, "started": time.time()})
-        status = self._follow(jd, stage)
+        status = self._follow(jd, stage, sid)
         with tempfile.TemporaryDirectory() as tmp:
             stage and stage(progress_dict({**status, "stage": "Downloading the results", "eta": 5},
                                           download="running"))
@@ -270,11 +325,13 @@ class SshProcessor(Processor):
             pass
         return state
 
-    def _follow(self, jd: str, stage) -> dict:
+    def _follow(self, jd: str, stage, sid: str | None = None) -> dict:
         """Stream the job status; reconnect after network trouble."""
         last: dict = {}
         failures = 0
         while True:
+            if sid is not None and self._was_cancelled(sid):
+                raise Cancelled(sid)
             try:
                 for line in self.t.stream(f"{shlex.quote(self._abs(self.ultraai))} job-status "
                                           f"{shlex.quote(jd)} --follow"):

@@ -45,6 +45,7 @@ export async function openEditor(root, id, crumbs) {
 
   // ---------------------------------------------------------------- state
   const doc = data.doc;
+  let baseVersion = data.doc_version ?? 0;  // optimistic concurrency: PUT /doc sends this back
   const ed = {
     voice: 0, lines: doc.voices[0].lines, selection: new Set(), editor: editorData,
     issues: data.issues.map(i => ({ ...i })).sort((a, b) => b.risk - a.risk), extraNotes: new Set(), missingMarks: [],
@@ -571,11 +572,19 @@ export async function openEditor(root, id, crumbs) {
     if (!dirty || saving) return;
     saving = true; dirty = false; setSave("saving");
     try {
-      const r = await api(`/api/songs/${id}/doc`, { method: "PUT", json: { doc, note: "edit" } });
+      const r = await api(`/api/songs/${id}/doc`, { method: "PUT", json: { doc, note: "edit", base_version: baseVersion } });
+      baseVersion = r.doc_version ?? baseVersion + 1;
       setSave(dirty ? "unsaved" : "saved", (r.problems || []).join("\n"));
       if (r.problems?.length) toast(`Saved with warnings: ${r.problems[0]}`);
     } catch (e) {
-      dirty = true; setSave("error", e.message); toast(`Save failed: ${e.message}`);
+      dirty = true;
+      if (e.status === 409) {  // the song changed on the server (reprocessed or saved elsewhere)
+        setSave("error", "changed on the server");
+        toast("This song changed on the server (reprocessed or saved in another tab).");
+        if (confirm("This song changed on the server. Reload the page to get the newest version?")) location.reload();
+      } else {
+        setSave("error", e.message); toast(`Save failed: ${e.message}`);
+      }
     } finally {
       saving = false;
       if (dirty && saveState !== "error") saveTimer = setTimeout(save, 1200);

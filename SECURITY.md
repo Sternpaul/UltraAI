@@ -8,9 +8,11 @@ response within a few days.
 
 ## Scope
 
-- **The Studio web app** binds to `127.0.0.1` only. Mutating requests require a per-install
-  token (see PR-14; until then the `X-UltraAI` header check) and the server validates the
-  `Host` header, so a website you visit cannot drive the API (DNS rebinding).
+- **The Studio web app** binds to `127.0.0.1` only. Mutating requests require the per-install
+  token (`token.txt` in the config dir, mode 0600, sent as the `x-ultraai` header and injected
+  into `index.html` as a meta tag; the old constant `X-UltraAI: 1` is no longer accepted), and
+  the server validates the `Host` header, so a website you visit cannot drive the API
+  (DNS rebinding).
 - **The processing server** is reached over SSH with your own keys; jobs run as your user
   in a CPU-capped systemd slice. There is no network listener besides SSH.
 - **Downloads** (yt-dlp from YouTube, LRCLIB, model files from Hugging Face) happen on your
