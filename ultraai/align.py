@@ -11,9 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-import torch
 
-from .lyrics import Lyrics
+from .lyrics import Lyrics  # torch is imported lazily: the Studio base install has no torch
 
 SR = 16000
 HOP = 320                 # samples per emission frame (20 ms)
@@ -35,10 +34,18 @@ def _model():
     return _MODEL
 
 
-@torch.inference_mode()
-def emissions(wave: np.ndarray) -> torch.Tensor:
+def emissions(wave: np.ndarray) -> "torch.Tensor":
     """Log-probabilities [T, C] for a mono 16 kHz waveform, computed window by window."""
-    model, _ = _model()
+
+    import torch
+
+    with torch.inference_mode():
+        return _emissions_impl(wave, _model()[0])
+
+
+def _emissions_impl(wave: np.ndarray, model) -> "torch.Tensor":
+    import torch
+
     total = len(wave)
     n_frames = total // HOP
     win, ctx = int(WINDOW_S * SR), int(CONTEXT_S * SR)
@@ -82,6 +89,7 @@ def _align_span(lyrics: Lyrics, indices: list[int], em: torch.Tensor, frame0: in
     """Viterbi-align ``lyrics.words[indices]`` to emission frames ``em`` (starting at ``frame0``)."""
     import warnings
 
+    import torch
     from torchaudio.functional import forced_align, merge_tokens
 
     _, dictionary = _model()

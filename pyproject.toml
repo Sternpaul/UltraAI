@@ -24,6 +24,9 @@ worker = [
   "torchcrepe", "pesto-pitch",  # optional pitch models (main or double-check)
 ]
 dev = ["pytest", "httpx"]
+# light deps so the test suite runs without the worker install (no torch): align.py imports
+# torch lazily, so importing the pipeline modules needs only these
+test = ["numpy", "scipy", "pyphen", "soundfile", "scikit-learn", "uroman"]
 
 [project.scripts]
 ultraai = "ultraai.cli:main"
