@@ -1,0 +1,31 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1" # Mondays 03:17 UTC
+
+permissions:
+  contents: read
+  security-events: write # uploading SARIF also enables code scanning on this public repo
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+      # Python is interpreted (no build step); the JS is the plain ES modules in studio/web
+      - uses: github/codeql-action/analyze@v3
