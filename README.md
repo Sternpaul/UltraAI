@@ -128,6 +128,7 @@ ultraai check FILE.txt        validate an UltraStar file
 * `ultraai/` – pipeline (`generate.py`, `align.py`, `structure.py`, `issues.py`, …),
   `worker.py`, `studio/` (backend + `web/` editor, plain ES modules, no build step).
 * `pip install -e ".[worker,dev]" && pytest`
+* `BENCHMARK.md` – which separation/pitch/karaoke models score best (and what is still being measured).
 * `PLAN.md` – method and measurements; `EDITOR_PLAN.md` – Studio design and status.
 * The Windows installer is built by `.github/workflows/windows-installer.yml`
   (PyInstaller + Inno Setup); tag `vX.Y.Z` to publish a release.
