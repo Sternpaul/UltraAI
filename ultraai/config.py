@@ -66,6 +66,8 @@ OPTS: list[Opt] = [
     Opt("crepe", "ULTRAAI_CREPE", "tiny", "CREPE model size: tiny|full"),
     Opt("struct_drop", "ULTRAAI_STRUCT_DROP", "0", "drop weakly heard extra line repeats in the structure DP"),
     Opt("stage_timing", "ULTRAAI_STAGE_TIMING", "0", "record per-stage seconds of the pipeline into generate.STAGE_TIMES (benchmarks)"),
+    Opt("onset_snap", "ULTRAAI_ONSET_SNAP", "1", "snap aligned word onsets to detected vocal onsets within the window"),
+    Opt("onset_snap_win", "ULTRAAI_ONSET_SNAP_WIN", "0.08", "seconds around a word onset to look for a vocal onset to snap to"),
     Opt("background_units", "ULTRAAI_BACKGROUND_UNITS",
         "ultraai-bench.service ultraai-library.service ultraai-after-run.service",
         "systemd user units paused while a song job runs; read once at import"),

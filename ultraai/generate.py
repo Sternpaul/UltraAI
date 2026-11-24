@@ -19,6 +19,7 @@ from . import align as aligner
 from . import config
 from .audio import DEFAULT_SEPARATION, load_mono, separate
 from .lyrics import Lyrics
+from .onsets import onsets_for, snap_words_to_onsets
 from .pitch import PitchTrack, track
 from .ultrastar.model import Line, Note, Song, format_number
 
@@ -945,6 +946,9 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
         with stage("align"):
             words = aligner.align_robust(lyrics, a.wave, em=a.emissions)
     with stage("notes"):
+        if config.get_bool("onset_snap"):
+            words, info["onset_snap"] = snap_words_to_onsets(
+                words, onsets_for(a.vocals, a.wave), config.get_float("onset_snap_win"))
         syl = build_syllables(lyrics, words, a.pitch)
         syl, info["dropped_vocable_lines"] = drop_unsung_vocables(syl)
         split_lines(syl)
