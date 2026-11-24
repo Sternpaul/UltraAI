@@ -50,9 +50,9 @@ run() {  # run <tag>
     if command -v systemd-run >/dev/null 2>&1; then
         systemd-run --user --slice=ultraai.slice --wait --pipe \
             -p WorkingDirectory="$PWD" -p CPUWeight=10 \
-            "$PY" -u scripts/regen_library.py "$1" m2,m3 "$LIBRARY" "$OUT"
+            "$PY" -u scripts/regen_library.py "$1" m2,m3 "$LIBRARY" "$OUT/library"
     else
-        "$PY" -u scripts/regen_library.py "$1" m2,m3 "$LIBRARY" "$OUT"
+        "$PY" -u scripts/regen_library.py "$1" m2,m3 "$LIBRARY" "$OUT/library"
     fi
 }
 
