@@ -5,7 +5,7 @@ on:
     tags: ["v*"]       # every release tag builds and publishes the worker image
   workflow_dispatch:   # manual run (Actions tab -> Run workflow)
   pull_request:
-    branches: [main, pr/03-config-registry]  # build only (no push): validate the Dockerfile
+    branches: [main, "pr/**"]  # build only (no push): validate the Dockerfile
 
 permissions:
   contents: read
