@@ -33,6 +33,10 @@ def main(out="out/bench"):
         stats = {k: round(100 * st.mean(r["metrics"].get(m, 0) for r in rs.values()), 1) for k, m in KEYS.items()}
         stats["min_per_song"] = round(st.mean(r["seconds"] for r in rs.values()) / 60, 1)
         stats["score"] = stats["timing"] + 0.5 * stats["pitch"]  # ordering in the picker
+        stage_rows = [r["stages"] for r in rs.values() if "stages" in r]
+        if stage_rows:
+            stats["stages"] = {n: round(st.mean(s[n] for s in stage_rows if n in s), 1)
+                               for n in sorted({k for s in stage_rows for k in s})}
         res[group][key] = stats
     # the baseline run (HTDemucs + SwiftF0, no backing-vocal removal) is the "pitch:swift" config
     if "swift" in res["pitch"]:

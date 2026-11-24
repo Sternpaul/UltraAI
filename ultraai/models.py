@@ -77,6 +77,12 @@ def rate(group: str, key: str) -> float:
     return {"htdemucs": 1.6, "swift": 0.02}.get(key, DEFAULT_RATE[group])
 
 
+def stage_rates(group: str, key: str) -> dict:
+    """Per-stage mean seconds of a model from the benchmark (empty dict when not measured)."""
+    b = bench().get(group, {}).get(key) or {}
+    return dict(b.get("stages") or {})
+
+
 def name(group: str, key: str) -> str:
     table = {"separation": SEPARATION, "pitch": PITCH, "lead": LEAD}[group]
     n, by = table.get(key, (key, ""))

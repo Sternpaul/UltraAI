@@ -65,6 +65,7 @@ OPTS: list[Opt] = [
     Opt("m3_trust", "ULTRAAI_M3_TRUST", "1", "anchor to LRC/transcript times even when free alignment is poor"),
     Opt("crepe", "ULTRAAI_CREPE", "tiny", "CREPE model size: tiny|full"),
     Opt("struct_drop", "ULTRAAI_STRUCT_DROP", "0", "drop weakly heard extra line repeats in the structure DP"),
+    Opt("stage_timing", "ULTRAAI_STAGE_TIMING", "0", "record per-stage seconds of the pipeline into generate.STAGE_TIMES (benchmarks)"),
     Opt("background_units", "ULTRAAI_BACKGROUND_UNITS",
         "ultraai-bench.service ultraai-library.service ultraai-after-run.service",
         "systemd user units paused while a song job runs; read once at import"),

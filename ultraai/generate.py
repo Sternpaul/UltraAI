@@ -7,7 +7,9 @@ grid -> screen lines from the lyric lines -> '-' placement learnt from the libra
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +27,28 @@ log = logging.getLogger(__name__)
 BEAT_S = 0.05             # fixed grid for M1: 50 ms per beat (#BPM 300)
 MAX_VOICED_GAP_S = 0.08   # unvoiced gaps (consonants) bridged inside a note
 MIN_NOTE_S = 0.08
+
+# per-stage seconds of the pipeline, accumulated by stage() when ULTRAAI_STAGE_TIMING=1
+# (benchmarks only; default off, so generated .txt output is never affected)
+STAGE_TIMES: dict[str, float] = {}
+
+
+def reset_stage_times() -> None:
+    """Clear STAGE_TIMES (benchmarks call this before each run)."""
+    STAGE_TIMES.clear()
+
+
+@contextlib.contextmanager
+def stage(name: str):
+    """Time the block into ``STAGE_TIMES[name]`` (accumulating) when stage timing is on."""
+    if not config.get_bool("stage_timing"):
+        yield
+        return
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        STAGE_TIMES[name] = STAGE_TIMES.get(name, 0.0) + (time.perf_counter() - t0)
 
 
 @dataclass
@@ -517,17 +541,19 @@ def analyse(audio: Path, separation: str = DEFAULT_SEPARATION, lead: str | None 
     from .audio import lead_vocals
 
     lead = lead if lead is not None else (config.get("lead") or None)
-    vocals, _ = separate(audio, separation, need_instrumental=False)
-    if lead:
-        vocals, _ = lead_vocals(vocals, lead)
+    with stage("separate"):
+        vocals, _ = separate(audio, separation, need_instrumental=False)
+        if lead:
+            vocals, _ = lead_vocals(vocals, lead)
     wave = load_mono(vocals, aligner.SR)
     em_cache = vocals.with_suffix(".emissions.pt")
-    if em_cache.exists():
-        em = torch.load(em_cache)
-    else:
-        em = aligner.emissions(wave)
-        torch.save(em, em_cache)
-    p = pitch_track(vocals, wave, config.get("pitch"))
+    with stage("analyse"):
+        if em_cache.exists():
+            em = torch.load(em_cache)
+        else:
+            em = aligner.emissions(wave)
+            torch.save(em, em_cache)
+        p = pitch_track(vocals, wave, config.get("pitch"))
     return Analysis(vocals, wave, em, p)
 
 
@@ -596,10 +622,11 @@ def generate_sung(audio: Path, candidates: list, language: str, meta: dict[str, 
     a = analyse(audio, separation)
     asr_sep = config.get("asr_sep") or None  # benchmarks: one transcript for every separation
     asr_vocals = a.vocals.with_name(f"vocals.{asr_sep}.mono16000.wav") if asr_sep else None
-    if asr_vocals is not None and asr_vocals.exists():
-        asr = transcribe(asr_vocals, language)
-    else:
-        asr = transcribe(a.vocals.with_name(a.vocals.stem + ".mono16000.wav"), language, wave=a.wave)
+    with stage("listen"):
+        if asr_vocals is not None and asr_vocals.exists():
+            asr = transcribe(asr_vocals, language)
+        else:
+            asr = transcribe(a.vocals.with_name(a.vocals.stem + ".mono16000.wav"), language, wave=a.wave)
     scored = []
     for k, cand in enumerate(candidates):
         texts, times = lrc_lines(cand)
@@ -874,7 +901,8 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
     lyrics = prepare(texts, language)
     assert len(lyrics.lines) == len(texts)
     a = analyse(audio, separation)
-    words = aligner.align(lyrics, a.wave, star_between="lines", em=a.emissions)
+    with stage("align"):
+        words = aligner.align(lyrics, a.wave, star_between="lines", em=a.emissions)
     free = words
     expected: list[float | None] | None = None
     info: dict = {"lrc_synced": times is not None, "anchored": False}
@@ -894,7 +922,8 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
                 if line_flags:
                     line_flags = line_flags[:len(keep)]
                 lyrics = prepare(texts, language)
-                words = free = aligner.align(lyrics, a.wave, star_between="lines", em=a.emissions)
+                with stage("align"):
+                    words = free = aligner.align(lyrics, a.wave, star_between="lines", em=a.emissions)
             if config.get_bool("repair"):
                 times, info["repaired_lines"] = aligner.repair_anchors(
                     lyrics, words, times, offsets,
@@ -902,39 +931,43 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
                     window=config.get_float("repair_shift"))
             for window in (aligner.ANCHOR_WINDOW_S, 3.0, 6.0):
                 try:
-                    words = aligner.align_anchored(lyrics, a.emissions, times, offsets, window=window)
+                    with stage("align"):
+                        words = aligner.align_anchored(lyrics, a.emissions, times, offsets, window=window)
                     info.update(anchored=True, anchor_window=window, offset_median=float(np.median(offsets)))
                     expected = [t + o for t, o in zip(times, offsets)]
                     break
                 except ValueError:  # LRC times inconsistent with this audio: loosen
                     continue
             else:
-                words = aligner.align_robust(lyrics, a.wave, em=a.emissions)
+                with stage("align"):
+                    words = aligner.align_robust(lyrics, a.wave, em=a.emissions)
     else:
-        words = aligner.align_robust(lyrics, a.wave, em=a.emissions)
-    syl = build_syllables(lyrics, words, a.pitch)
-    syl, info["dropped_vocable_lines"] = drop_unsung_vocables(syl)
-    split_lines(syl)
-    proposals: list = []
-    if config.get_bool("harmonize"):
-        info["harmonized_lines"] = harmonize_repeats(syl, proposals, a.pitch)
-    mark_note_kinds(syl)
-    info["lines"] = line_report(syl)
-    info["low_confidence_lines"] = sum(r["review"] for r in info["lines"])
-    _add_issues(info, syl, free, expected, asr_words, line_flags, lyrics, a.pitch)
-    info["issues"] += double_check_issues(audio, separation, syl, a)
-    info["issues"] = sorted(info["issues"] + _repeat_issues(proposals), key=lambda i: -i["risk"])
-    grid = None
-    if config.get_bool("tempo"):
-        from .audio import work_dir
-        from .tempo import choose_grid, detect_beats
+        with stage("align"):
+            words = aligner.align_robust(lyrics, a.wave, em=a.emissions)
+    with stage("notes"):
+        syl = build_syllables(lyrics, words, a.pitch)
+        syl, info["dropped_vocable_lines"] = drop_unsung_vocables(syl)
+        split_lines(syl)
+        proposals: list = []
+        if config.get_bool("harmonize"):
+            info["harmonized_lines"] = harmonize_repeats(syl, proposals, a.pitch)
+        mark_note_kinds(syl)
+        info["lines"] = line_report(syl)
+        info["low_confidence_lines"] = sum(r["review"] for r in info["lines"])
+        _add_issues(info, syl, free, expected, asr_words, line_flags, lyrics, a.pitch)
+        info["issues"] += double_check_issues(audio, separation, syl, a)
+        info["issues"] = sorted(info["issues"] + _repeat_issues(proposals), key=lambda i: -i["risk"])
+        grid = None
+        if config.get_bool("tempo"):
+            from .audio import work_dir
+            from .tempo import choose_grid, detect_beats
 
-        mix = work_dir(audio) / "mix.wav"
-        if not mix.exists() and not mix.with_suffix(".beats.npz").exists():
-            from .audio import to_wav
+            mix = work_dir(audio) / "mix.wav"
+            if not mix.exists() and not mix.with_suffix(".beats.npz").exists():
+                from .audio import to_wav
 
-            to_wav(audio, mix)  # the library run deletes decoded mixes to save disk
-        tempo, beats = detect_beats(mix)
-        grid = choose_grid(tempo, beats, syl[0].start)
-        info["tempo"] = grid.tempo
-    return to_song(syl, meta, audio.name, grid), info
+                to_wav(audio, mix)  # the library run deletes decoded mixes to save disk
+            tempo, beats = detect_beats(mix)
+            grid = choose_grid(tempo, beats, syl[0].start)
+            info["tempo"] = grid.tempo
+        return to_song(syl, meta, audio.name, grid), info
