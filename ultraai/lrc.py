@@ -15,7 +15,11 @@ from .audio import CACHE_DIR
 
 API = "https://lrclib.net/api/search?"
 USER_AGENT = "UltraAI/0.1 (karaoke file generator)"
+CACHE_TTL_S = 30 * 24 * 3600   # refetch a cached LRCLIB response after 30 days
+MIN_REQUEST_INTERVAL_S = 0.2   # politeness delay between two HTTP requests to lrclib.net
 _TIME = re.compile(r"\[(\d+):(\d+(?:[.:]\d+)?)\]")
+
+_last_request = 0.0
 
 
 @dataclass
@@ -65,17 +69,42 @@ def _clean_title(t: str) -> str:
     return re.sub(r"\s*[(\[](feat|ft|album|live|greek|esc|radio|remaster)[^)\]]*[)\]]", "", t, flags=re.I).strip()
 
 
+def _cache_name(params: dict) -> str:
+    """The one cache naming scheme: q_<sorted k=v pairs>.json."""
+    name = "q_" + "_".join(f"{k}={v}" for k, v in sorted(params.items()))
+    return re.sub(r"[^\w]+", "_", name)[:180] + ".json"
+
+
+def _legacy_cache_name(params: dict) -> str | None:
+    """The old naming ("artist - title.json"), only used for artist+track queries."""
+    if set(params) == {"artist_name", "track_name"}:
+        name = f"{params['artist_name']} - {params['track_name']}"
+        return re.sub(r"[^\w]+", "_", name)[:180] + ".json"
+    return None
+
+
+def _throttle() -> None:
+    """Wait so that at least MIN_REQUEST_INTERVAL_S passes between two HTTP requests."""
+    global _last_request
+    wait = MIN_REQUEST_INTERVAL_S - (time.time() - _last_request)
+    if wait > 0:
+        time.sleep(wait)
+    _last_request = time.time()
+
+
 def _query(params: dict) -> list[dict]:
-    """One LRCLIB search, cached on disk."""
+    """One LRCLIB search, cached on disk (single "q_..." scheme, CACHE_TTL_S TTL)."""
     cache_dir = CACHE_DIR / "lrclib"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    if set(params) == {"artist_name", "track_name"}:  # old cache naming
-        name = f"{params['artist_name']} - {params['track_name']}"
-    else:
-        name = "q_" + "_".join(f"{k}={v}" for k, v in sorted(params.items()))
-    cache = cache_dir / (re.sub(r"[^\w]+", "_", name)[:180] + ".json")
-    if cache.exists():
+    cache = cache_dir / _cache_name(params)
+    legacy_name = _legacy_cache_name(params)
+    if not cache.exists() and legacy_name is not None:
+        legacy = cache_dir / legacy_name
+        if legacy.exists():
+            legacy.rename(cache)  # migrate an old "artist - title.json" cache once
+    if cache.exists() and time.time() - cache.stat().st_mtime < CACHE_TTL_S:
         return json.loads(cache.read_text())
+    _throttle()
     req = urllib.request.Request(API + urllib.parse.urlencode(params), headers={"User-Agent": USER_AGENT})
     for attempt in range(3):
         try:
