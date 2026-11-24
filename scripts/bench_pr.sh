@@ -27,6 +27,8 @@ OUT="${OUT:-$REPO/out}"
 VENV="${VENV:-$REPO/.venv}"
 BASE_REF="${BASE_REF:-main}"
 BASE_TAG="${BASE_TAG:-base}"
+# CACHE: analysis cache dir (sets ULTRAAI_CACHE); default ~/.cache/ultraai
+export ULTRAAI_CACHE="${CACHE:-$HOME/.cache/ultraai}"
 
 [ -d "$LIBRARY" ] || { echo "no benchmark library at $LIBRARY (set LIBRARY=...)" >&2; exit 2; }
 if [ -x "$VENV/bin/pip" ]; then PIP="$VENV/bin/pip"; PY="$VENV/bin/python";

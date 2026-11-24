@@ -68,6 +68,19 @@ The gate is **no regression vs base** on `onset_within_250ms`, `onset_rel_within
 add a PLAN.md progress entry. `scripts/bench_pr.sh` uses its own git worktree and runs at
 CPUWeight=10, so it never disturbs a running benchmark/library job or Studio song.
 
+Local use (a machine with the benchmark library and analysis cache, e.g. via `LIBRARY=` /
+`CACHE=` / `OUT=` / `VENV=` env vars — see the script header):
+
+```bash
+CACHE=/path/to/bench-cache LIBRARY=/path/to/songs OUT=/path/to/out VENV=/path/to/.venv \
+  bash scripts/bench_pr.sh pr/08-onset-snapping
+```
+
+Privacy rules for the benchmark data: `songs/` and `bench-cache/` (and any library/cache
+folders) are gitignored — never commit anything from them, and never name specific songs in
+commits, PRs, issues or docs (genres only). When pasting `compare_runs.py` output into a PR,
+paste only the summary metric lines, not the per-song list.
+
 Model benchmarks (separation/pitch/lead models on a few songs, resumable):
 `scripts/bench_models.py` → `scripts/bench_report.py` → `scripts/bench_export.py`.
 
