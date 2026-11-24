@@ -3,7 +3,8 @@ name: gitleaks (secret scan)
 on:
   push:
     branches: [main]
-  
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
