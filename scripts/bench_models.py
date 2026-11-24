@@ -6,6 +6,9 @@ Each config = environment for the pipeline (main separation, pitch model, lead m
 All configs use the same Whisper transcript (from HTDemucs vocals) so only the model's
 effect on timing and notes is measured.  Resumable: finished (config, song) pairs are
 skipped.  Results: out/bench/results.jsonl; summary: scripts/bench_report.py.
+
+Env: BENCH_ONLY (substring of config names), BENCH_CONFIGS (comma list of exact config
+names; "sep:htdemucs" = baseline), BENCH_SONGS (file with one song name per line).
 """
 import contextlib
 import io
@@ -32,13 +35,11 @@ SEPARATIONS = ["hdemucs_mmi.yaml", "UVR-MDX-NET-Voc_FT.onnx", "Kim_Vocal_2.onnx"
                "htdemucs_ft", "MDX23C-8KFFT-InstVoc_HQ.ckpt", "model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt",
                "melband", "melband_roformer_big_beta4.ckpt", "melband_roformer_big_beta5e.ckpt",
                "mel_band_roformer_kim_ft_unwa.ckpt", "MelBandRoformerBigSYHFTV1.ckpt",
-               "model_bs_roformer_ep_368_sdr_12.9628.ckpt", "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
+               "model_bs_roformer_ep_368_sdr_12.9628.ckpt",
                "melband_roformer_instvox_duality_v2.ckpt"]
 CONFIGS += [(f"sep:{m}", "separation", {"ULTRAAI_SEPARATION": m}) for m in SEPARATIONS]
-LEADS = ["UVR_MDXNET_KARA_2.onnx", "UVR_MDXNET_KARA.onnx", "5_HP-Karaoke-UVR.pth", "6_HP-Karaoke-UVR.pth",
-         "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt", "mel_band_roformer_karaoke_gabox_v2.ckpt",
-         "mel_band_roformer_karaoke_becruily.ckpt", "bs_roformer_karaoke_frazer_becruily.ckpt",
-         "bs_roformer_karaoke_anvuew.ckpt", "mel_band_roformer_karaoke_gabox.ckpt"]
+LEADS = []  # backing-vocal removal measured on 25 songs: timing -1.5 (see BENCHMARK.md), not ranked further
+# dropped to save time (near-duplicates of measured ones): BS-RoFormer ep_317
 CONFIGS += [(f"lead:{m}", "lead", {"ULTRAAI_LEAD": m}) for m in LEADS]
 
 
@@ -50,10 +51,19 @@ def main(out="out/bench"):
     if res.exists():
         done = {(json.loads(ln)["config"], json.loads(ln)["song"]) for ln in res.read_text().splitlines() if ln.strip()}
     only = os.environ.get("BENCH_ONLY")
-    for name, kind, env in CONFIGS:
+    exact = [c for c in os.environ.get("BENCH_CONFIGS", "").split(",") if c]
+    songs = SONGS
+    if os.environ.get("BENCH_SONGS"):  # file with one song name per line
+        songs = [ln.strip() for ln in Path(os.environ["BENCH_SONGS"]).read_text(encoding="utf-8").splitlines() if ln.strip()]
+    configs = CONFIGS + [("sep:htdemucs", "separation", {})]  # baseline, also for other song sets
+    for name, kind, env in configs:
         if only and only not in name:
             continue
-        for song in SONGS:
+        if exact and name not in exact:
+            continue
+        if not exact and name == "sep:htdemucs":
+            continue  # the main run's baseline is pitch:swift
+        for song in songs:
             if (name, song) in done:
                 continue
             for k, v in {**BASE, **env}.items():

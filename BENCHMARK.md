@@ -25,8 +25,10 @@ files, averaged over the benchmark songs:
 | Model | timing | timing-rel | pitch | pitch±1 | s/song |
 |---|---|---|---|---|---|
 | melband (Kim RoFormer) | **92.0** | 80.8 | 80.2 | 87.6 | 992 |
+| MelBandRoformerBigSYHFTV1 | 91.8 | 79.6 | 78.9 | 86.8 | 1758 |
 | melband_roformer_big_beta4 | 91.3 | 80.6 | 79.6 | 87.2 | 3147 |
 | melband_roformer_big_beta5e | 91.2 | **81.4** | 81.6 | 88.6 | 2536 |
+| mel_band_roformer_kim_ft_unwa | 90.7 | 79.0 | 79.5 | 87.2 | 7458 |
 | UVR-MDX-NET-Voc_FT.onnx | 90.6 | 80.0 | 80.8 | 88.7 | **427** |
 | model_mel_band_roformer_ep_3005_sdr_11.4360 | 90.1 | 79.1 | 81.3 | 88.8 | 5612 |
 | **Kim_Vocal_2.onnx** | 90.0 | 78.3 | **82.5** | **90.0** | **427** |
@@ -35,6 +37,17 @@ files, averaged over the benchmark songs:
 | htdemucs_ft | 88.2 | 76.4 | 81.4 | 88.2 | 1468 |
 | htdemucs (default) | 87.6 | 76.7 | 80.1 | 88.4 | ~cached |
 | hdemucs_mmi.yaml | 86.8 | 74.6 | 80.5 | 88.1 | 330 |
+| model_bs_roformer_ep_368_sdr_12.9628 | *(running, 1 of 3 songs)* | | | | ~7700 |
+
+Per song the ranking moves around: on the hardest of the three songs (lowest scores for every
+model) BS-RoFormer ep_368 has the best timing of all models (87.8 vs 86.2 for melband Kim),
+at ~8× melband's time. Its full 3-song result follows when the run finishes.
+
+**Not worth their time** (slower *and* worse than melband Kim on these songs): MDX23C,
+mel_band_roformer ep_3005 (viperx), mel_band_roformer_kim_ft_unwa, big_beta4.
+
+**Dropped from the long run** to save ~20 h: BS-RoFormer ep_317 (near twin of ep_368, same
+architecture, SDR 12.98 vs 12.96) and all karaoke/lead models (see the karaoke section below).
 
 ## Pitch models (3 reference songs, separation = htdemucs)
 
@@ -74,8 +87,8 @@ rmvpe is the pick if ±1 semitone matters more than exact pitch.
 Backing-vocal removal (ULTRAAI_LEAD) was tested on the 25-song set with UVR_MDXNET_KARA_2:
 timing **−1.5**, timing-rel **−2.7**, pitch +0.8 — at a cost of ~+825 s/song. Removing
 backing vocals degrades the stem the aligner relies on. **Recommendation: keep lead off**
-(the default). The long run still ranks all 10 lead models on 3 songs; revisit only if a
-model shows a pitch gain there worth chasing.
+(the default). The long run no longer ranks the other lead models either; revisit only if a
+new karaoke model promises a large pitch gain.
 
 ## Pipeline feature gate (25 reference songs, generator m3)
 
@@ -88,6 +101,8 @@ jitter (timing-rel −1.0) without improving timing. Details on the pull request
 
 ## Current recommendations
 
+* The separation ranking rests on 3 songs only, and the pitch ranking showed that 3 songs can
+  mislead (rmvpe won on 3, swift on 25). The 25-song separation depth pass decides the default.
 * **Best quality:** melband Kim RoFormer separation (timing 92.0) + rmvpe pitch — but ~16 min/song on the bench host.
 * **Best balance:** **Kim_Vocal_2.onnx** separation (timing 90.0 *and* best pitch 82.5, ~7 min/song) + **swift** pitch (best exact pitch on the 25-song set, 71.2; use rmvpe if ±1 semitone matters more, 82.9).
 * **Fastest reasonable:** htdemucs (default) + swift — 87.6 timing, 80.1 pitch, separation cached.
@@ -97,10 +112,10 @@ jitter (timing-rel −1.0) without improving timing. Details on the pull request
 
 | Run | Scope | Status |
 |---|---|---|
-| Long model benchmark (low-power host) | 31 configs × 3 songs; 17 done | ~14 configs left |
+| Long model benchmark (low-power host) | 22 configs × 3 songs (lead models and BS ep_317 dropped); 20 done | BS-RoFormer ep_368, InstVoc Duality v2 left (~6–8 h) |
+| Separation depth pass (low-power host) | htdemucs + Kim_Vocal_2 + Voc_FT + melband × **25 songs** (language/genre-stratified, same selection logic as `bench_cache_fill.py`) | queued after the long run (~10 h) |
 | Pitch depth pass (desktop CPU) | 6 pitch models × **25 songs** | **done — table above** |
-| Lead/karaoke depth pass | 10 lead models × 25 songs | **paused — KARA_2 already shows a clear negative; see above** |
-| Separation depth pass | top-3 separation models × 10–25 songs | planned |
+| Lead/karaoke depth pass | 10 lead models × 25 songs | **dropped — KARA_2 already shows a clear negative; see above** |
 | Parameter sweeps | alignment windows, note styles, harmonize tolerances (each ~7 min on 25 songs) | planned |
 | Alternative timing approach | Whisper word-timestamps instead of forced alignment ("m4") | planned |
 
@@ -109,6 +124,9 @@ jitter (timing-rel −1.0) without improving timing. Details on the pull request
 ```bash
 python scripts/bench_models.py out/bench        # model benchmark (resumable, cached per song)
 python scripts/bench_report.py out/bench        # summary table
+BENCH_SONGS=songs.txt BENCH_CONFIGS=sep:htdemucs,sep:melband \
+  python scripts/bench_models.py out/bench-depth  # chosen configs on another song set
+bash scripts/bench_queue.sh                     # the server queue: long run, then the depth pass
 bash scripts/bench_pr.sh <branch>               # PR gate: regenerate cached songs, compare vs base
 python scripts/bench_cache_fill.py library 25   # grow the cached benchmark set (genre/language stratified)
 ```
