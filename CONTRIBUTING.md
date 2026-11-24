@@ -55,6 +55,19 @@ systemd-run --user --slice=ultraai.slice --wait --pipe -p WorkingDirectory=$PWD 
 Full library run (hours, resumable, one song at a time):
 `scripts/process_library.py`, status via `scripts/library_status.py`.
 
+**Benchmark gate for anything that affects the generated .txt** (alignment, notes, lines,
+grid, lyrics handling, …): every such PR must show the fast before/after table. On the
+processing server:
+
+```bash
+bash scripts/bench_pr.sh pr/08-onset-snapping        # regenerates cached library songs, prints base-vs-PR table
+```
+
+The gate is **no regression vs base** on `onset_within_250ms`, `onset_rel_within_100ms` and
+`pitch_class_acc` (m2 and m3). Paste the `compare_runs.py` table into the PR description and
+add a PLAN.md progress entry. `scripts/bench_pr.sh` uses its own git worktree and runs at
+CPUWeight=10, so it never disturbs a running benchmark/library job or Studio song.
+
 Model benchmarks (separation/pitch/lead models on a few songs, resumable):
 `scripts/bench_models.py` → `scripts/bench_report.py` → `scripts/bench_export.py`.
 
