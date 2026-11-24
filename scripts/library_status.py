@@ -3,7 +3,6 @@
     .venv/bin/python scripts/library_status.py [out/library]
 """
 import json
-import os
 import statistics
 import sys
 from pathlib import Path
@@ -21,8 +20,10 @@ def main(out="out/library"):
     print(f"{len(rows)}/{total} songs processed, {sum('error' in r for r in rows)} failed")
     if secs:
         print(f"median {statistics.median(secs) / 60:.1f} min/song -> about {left * statistics.median(secs) / 3600:.0f} h left")
-    sys.path.insert(0, os.path.dirname(__file__))
-    from compare_runs import ref_shifted
+    if __package__ in (None, ""):  # plain file run: python scripts/library_status.py
+        from compare_runs import ref_shifted
+    else:  # module run: python -m scripts.library_status
+        from scripts.compare_runs import ref_shifted
 
     shifted = {r["name"] for r in rows if isinstance(r.get("m2"), dict) and "error" not in r["m2"]
                and ref_shifted(r["m2"])}
