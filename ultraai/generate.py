@@ -66,6 +66,7 @@ class Syllable:
     stability: float = 0.0       # pitch spread (semitones, IQR) inside the syllable
     kind: str = ":"
     src_line: int = 0            # lyric line given to the aligner (``line`` becomes the screen line)
+    auto_fixed: bool = False     # pitch auto-corrected by the double-check consensus (B3)
 
 
 def _note_end(p: PitchTrack, start: float, limit: float) -> float:
@@ -503,7 +504,7 @@ def to_song(syl: list[Syllable], meta: dict[str, str], audio_name: str, grid=Non
                 text = s.text.rstrip() if len(parts) > 1 else s.text
             else:
                 text = "~" + (" " if word_end and k == len(parts) - 1 else "")
-            lines[-1].notes.append(Note(s.kind, start, end - start, pitch - 60, text))
+            lines[-1].notes.append(Note(s.kind, start, end - start, pitch - 60, text, auto_fixed=s.auto_fixed))
             prev_end = end
     # keep a 1-beat gap between notes where possible
     notes = [n for ln in lines for n in ln.notes]
@@ -802,10 +803,15 @@ def _pitch_name(m: str) -> str:
 def double_check_issues(audio: Path, separation: str, syl: list[Syllable], a) -> list[dict]:
     """Second (third, ...) opinions, all optional (worker options):
     ULTRAAI_PITCH_CHECK=m1,m2,...: more pitch models - syllables where any of them disagrees
-      with the main model by 2+ semitones (octave ignored) are marked;
+      with the main model by 2+ semitones (octave ignored) are marked.  When >=2 of the check
+      models agree with each other (within 1 semitone, octave-folded) and their consensus
+      differs from the main pitch by 2+ semitones, the syllable pitch is auto-corrected to
+      that consensus instead and the issue is recorded as kind 'auto-fixed'
+      (ULTRAAI_CHECK_AUTOFIX, default on; only active with more than one check model);
     ULTRAAI_SEP_CHECK=m1,m2,...: more vocal separations - syllables that are clearly sung in
       one separation but (nearly) silent or on another pitch in another are marked (backing
       vocals, instruments or noise that one model let through)."""
+    from . import issues as iss
     from .models import name as model_name
 
     main_pitch = config.get("pitch")
@@ -813,12 +819,25 @@ def double_check_issues(audio: Path, separation: str, syl: list[Syllable], a) ->
     checks = [m for m in _models("pitch_check") + _models("pitch2") if m != main_pitch]
     others = {m: pitch_track(a.vocals, a.wave, m) for m in dict.fromkeys(checks)}
     if others:
+        autofix_on = config.get_bool("check_autofix")
         for s in syl:
             x = _syl_pitch(a.pitch, s)
             if x is None:
                 continue
-            off = {m: abs(_fold(y, x) - x) for m, p2 in others.items() if (y := _syl_pitch(p2, s)) is not None}
-            bad = {m: d for m, d in off.items() if d >= 2}
+            folded = {m: _fold(y, x) for m, p2 in others.items() if (y := _syl_pitch(p2, s)) is not None}
+            fixed = iss.consensus_autofix(x, folded) if autofix_on else None
+            if fixed is not None:
+                consensus, models = fixed
+                new_pitch = int(round(consensus))
+                delta = new_pitch - s.pitch
+                s.pitch = new_pitch
+                if s.segments:  # keep the melisma shape, shift it with the syllable
+                    s.segments = [(t0, t1, p + delta) for t0, t1, p in s.segments]
+                s.auto_fixed = True
+                out.append(iss.autofix_issue(s, [_pitch_name(m) for m in models],
+                                             int(round(x)), new_pitch, _pitch_name(main_pitch)))
+                continue
+            bad = {m: abs(f - x) for m, f in folded.items() if abs(f - x) >= 2}
             if bad:
                 d = max(bad.values())
                 who = ", ".join(f"{_pitch_name(m)} {round(v)}" for m, v in bad.items())
@@ -851,6 +870,9 @@ def _merge_note_issues(issues: list[dict]) -> list[dict]:
     """Neighbouring syllables with the same finding become one issue."""
     out: list[dict] = []
     for i in sorted(issues, key=lambda x: (x["kind"], x["start"])):
+        if i["kind"] == "auto-fixed":  # one entry per corrected note (models/old/new pitch)
+            out.append(dict(i))
+            continue
         last = out[-1] if out else None
         if last and last["kind"] == i["kind"] and last["line"] == i["line"] and i["start"] - last["end"] < 0.6:
             last["end"] = i["end"]

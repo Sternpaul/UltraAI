@@ -39,6 +39,8 @@ OPTS: list[Opt] = [
     Opt("sep_check", "ULTRAAI_SEP_CHECK", "", "comma-separated extra separation models used as double check"),
     Opt("sep2", "ULTRAAI_SEP2", "", "legacy alias of sep_check"),
     Opt("asr_sep", "ULTRAAI_ASR_SEP", "", "separation whose vocals the Whisper transcript is taken from (benchmarks)"),
+
+    Opt("check_autofix", "ULTRAAI_CHECK_AUTOFIX", "1", "auto-correct note pitch to the consensus of >=2 agreeing double-check models; only active when more than one check model is set; 0 disables"),
     Opt("melisma", "ULTRAAI_MELISMA", "1", "split held syllables into ~ notes at pitch changes"),
     Opt("minseg", "ULTRAAI_MINSEG", "0.15", "min seconds a pitch region must last to become a note (singer style)"),
     Opt("maxseg", "ULTRAAI_MAXSEG", "6", "max pitch steps inside one long wobbly syllable"),

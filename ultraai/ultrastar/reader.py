@@ -6,7 +6,8 @@ Notable USDX behaviour reproduced here:
   ": 8 6 14  been" has the text " been").
 - the header section ends at the first line not starting with '#'.
 - '#RELATIVE:yes' (unversioned only) is converted to absolute beats.
-- everything after 'E' is ignored; 'B' (variable BPM) lines are ignored.
+- everything after 'E' is ignored (as USDX does), except our own '#ULTRAAI-AUTOFIX:'
+  trailer there, which marks double-check auto-corrected notes; 'B' lines are ignored.
 """
 
 from __future__ import annotations
@@ -104,6 +105,7 @@ def parse(text: str) -> Song:
             song.voices.setdefault(v, []).append(current[v])
         return current[v]
 
+    after_e = False
     for lineno in range(i, len(raw_lines)):
         line = raw_lines[lineno].rstrip("\r\n")
         stripped = line.strip()
@@ -113,7 +115,20 @@ def parse(text: str) -> Song:
         where = f"line {lineno + 1}"
         try:
             if tag == "E":
-                break
+                after_e = True
+                continue
+            if after_e:
+                # USDX ignores everything after 'E'; only our own trailer is read there
+                if stripped[:17].upper() == "#ULTRAAI-AUTOFIX:":
+                    parts = stripped.split(":")
+                    if len(parts) == 3:
+                        v = int(parts[1])
+                        notes = [n for ln in song.voices.get(v, []) for n in ln.notes]
+                        for tok in parts[2].split(","):
+                            idx = int(tok)
+                            if 0 <= idx < len(notes):
+                                notes[idx].auto_fixed = True
+                continue
             if tag == "P":
                 m = re.fullmatch(r"P\s*(\d+)", stripped)
                 if not m:
