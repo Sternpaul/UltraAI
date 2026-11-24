@@ -13,6 +13,7 @@ import io
 import json
 import os
 import random
+import shutil
 import sys
 import time
 import traceback
@@ -52,7 +53,7 @@ def main(root="library", out="out/library"):
     log(out, f"start: {len(cases)} songs, {len(done)} done, {len(todo)} to go")
     failures = 0
     for k, case in enumerate(todo, 1):
-        free = os.statvfs(out).f_bavail * os.statvfs(out).f_frsize / 1e9
+        free = shutil.disk_usage(out).free / 1e9
         if free < MIN_FREE_GB:
             log(out, f"stopping: only {free:.1f} GB disk left")
             break
