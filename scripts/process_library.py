@@ -39,6 +39,11 @@ def log(out: Path, msg: str) -> None:
         f.write(line + "\n")
 
 
+def backoff_s(failures: int) -> int:
+    """Seconds to wait after `failures` consecutive song failures (60 s each, capped at 1 h)."""
+    return min(3600, 60 * failures)
+
+
 def main(root="library", out="out/library"):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -92,8 +97,10 @@ def main(root="library", out="out/library"):
         log(out, f"[{k}/{len(todo)}] {case.name[:50]}  {row['seconds']} s  "
                  f"m3 within250={m3.get('onset_within_250ms', float('nan')):.3f}  {row.get('error', '')}")
         if failures >= 5:
-            log(out, "stopping: 5 songs in a row failed - something is broken, see results.jsonl")
-            break
+            delay = backoff_s(failures)
+            log(out, f"{failures} songs in a row failed - backing off {delay} s, then continuing "
+                     f"(see results.jsonl)")
+            time.sleep(delay)
     else:
         log(out, "finished")
 
