@@ -104,6 +104,11 @@ class Processor:
             self.lib.save_version(sid, txt.read_text(encoding="utf-8"), "before-reprocess")
         txt.write_text(text, encoding="utf-8")
         self.lib.save_version(sid, text, "auto")
+        from .. import config
+        for ext, key in ((".lrc", "export_lrc"), (".ass", "export_ass")):
+            src = out / f"song{ext}"
+            if config.get_bool(key) and src.exists():
+                shutil.copy2(src, txt.with_suffix(ext))
         side = json.loads((out / "song.ultraai.json").read_text(encoding="utf-8"))
         txt.with_suffix(".ultraai.json").write_text(json.dumps(side, ensure_ascii=False), encoding="utf-8")
         n = len(side.get("issues", []))

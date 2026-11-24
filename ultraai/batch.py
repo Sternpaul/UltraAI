@@ -256,6 +256,7 @@ def append_report_row(report: Path, row: dict, existing: dict[str, dict]) -> boo
 def convert(track: Track, out_root: Path, separation: str, lead: str | None, greek_script: bool,
             stems: bool, method: str = "m3") -> dict:
     from .audio import lead_vocals, separate
+    from .byproducts import write_byproducts
     from .generate import generate_from_lrc, generate_sung
     from .ultrastar.validator import validate
     from .ultrastar.writer import write
@@ -314,6 +315,7 @@ def convert(track: Track, out_root: Path, separation: str, lead: str | None, gre
     song.set("MP3", audio_name)
     song.set("AUDIO", audio_name)
     write(song, folder / f"{name}.txt")
+    write_byproducts(song, folder / f"{name}.txt")
     import json
     (folder / f"{name}.ultraai.json").write_text(json.dumps(
         {"lyrics_source": source, "anchored": info.get("anchored"), "structure": info.get("structure"),

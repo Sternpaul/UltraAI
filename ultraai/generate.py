@@ -489,11 +489,13 @@ def to_song(syl: list[Syllable], meta: dict[str, str], audio_name: str, grid=Non
         return int(round((t - gap_s) / beat_s))
 
     lines: list[Line] = []
+    line_of: dict[int, Line] = {}   # screen-line number -> Line (for the chorus header)
     prev_end = 0
     current_line = None
     for s in syl:
         if s.line != current_line:
             lines.append(Line())
+            line_of[s.line] = lines[-1]
             current_line = s.line
         parts = s.segments or [(s.start, s.end, s.pitch)]
         word_end = s.text.endswith(" ")
@@ -521,6 +523,14 @@ def to_song(syl: list[Syllable], meta: dict[str, str], audio_name: str, grid=Non
         else:
             offset = g / 2 if g * beat_s < 2.0 else min(1.0 / beat_s, g / 2)
             cur.break_beat = min(nxt.start - 1, cur.end + max(1, int(round(offset))))
+    if config.get_bool("previewstart"):
+        # the chorus = the largest repeated line group (same words + syllable count, as in
+        # harmonize_repeats); the preview starts at the first note of its first occurrence
+        groups = _line_groups(syl)
+        if groups:
+            chorus = max(groups, key=lambda g: (len(g), -g[0][0].start))
+            first_note = line_of[chorus[0][0].line].notes[0]
+            song.set("PREVIEWSTART", f"{song.beat_to_seconds(first_note.start):.2f}")
     song.voices[1] = lines
     return song
 

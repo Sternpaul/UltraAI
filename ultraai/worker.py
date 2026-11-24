@@ -298,6 +298,7 @@ def process(job: Path) -> dict:
 def _process(job: Path, spec: dict, out: Path) -> dict:
     from .audio import separate
     from .batch import detect_language, greeklish
+    from .byproducts import write_byproducts
     from .generate import analyse, generate_from_lines, generate_sung
     from .lrc import fetch_candidates
     from .lyrics import language_code
@@ -374,6 +375,7 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
     song.set("MP3", spec["audio"])
     song.set("AUDIO", spec["audio"])
     write(song, out / "song.txt")
+    write_byproducts(song, out / "song.txt")
     side = {k: info.get(k) for k in ("issues", "words", "lines", "risk_model", "structure", "candidate",
                                       "candidates", "anchored", "asr_coverage")}
     side.update(lyrics_source=source, language=lang_name, separation=sep)
