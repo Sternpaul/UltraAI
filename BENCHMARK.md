@@ -175,6 +175,23 @@ cookies file we still only got 7/25; PO-token support would be the robust fix):
 - **`yt_agreement`** (Whisper vs YouTube-ASR word agreement) is a useful free quality signal:
   mean 0.57 on the 7 songs, range 0.04–0.84 — garbled auto-captions are detectable this way.
 
+### Follow-up: exact-ytid rerun on the gate set, English-weighted (2026-07)
+
+- The 25-song gate set is **20/25 English**, matching the real library (~80% English);
+  `bench_cache_fill.py` now keeps true library language proportions (majority language
+  capped at 90%, not 50%) so future fills stay representative.
+- Exact USDB ytids (`v=` in `.usdb` meta_tags) were mapped for the gate songs
+  (11/25 matched by artist-title; no YouTube search). Fetching subs for the missing
+  ones hit the YouTube 429 wall hard (all rate-limited; 3 of 10 had genuinely no
+  captions) → only **1 English gate song** had exact ytid + usable subs.
+- On that song, times-only anchoring was clearly negative (timing −16.5, timing-rel
+  −14.0, `yt_agreement` 0.51) — consistent with the n=7 result above. Combined with the
+  exact-ytid USDB n=3 (neutral, +1.1 timing-rel), the verdict stands: **YouTube subs are
+  not a useful timing source; `ULTRAAI_YT_ANCHOR` stays 0**. They remain (a) a fallback
+  lyrics source and (b) the `yt_agreement` review signal.
+- To widen n beyond the 429 wall, PO-token support for yt-dlp is the follow-up
+  (cookies alone still got rate-limited here).
+
 ## Reproduce
 
 ```bash
