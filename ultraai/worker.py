@@ -346,6 +346,8 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
     # lyrics: user-supplied > LRCLIB > YouTube subs (last resort: caption text rarely
     # matches the sung lyrics — measured word_recall -60.8, see BENCHMARK.md)
     line_times: list[float] | None = None
+    yt_meta = {"ARTIST": artist, "TITLE": title,
+               "SOURCE": spec.get("source") or "", "YTID": spec.get("ytid") or ""}
     if spec.get("lyrics"):
         pr.skip("lyrics", "your lyrics")
         cands, source = lyrics_candidates(spec["lyrics"], artist, title), "user"
@@ -354,8 +356,7 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
         cands, source = fetch_candidates(artist, title, audio), "LRCLIB"
         if not cands:
             from .batch import yt_sub_lyrics
-            yt = yt_sub_lyrics(audio, {"ARTIST": artist, "TITLE": title,
-                                       "SOURCE": spec.get("source") or "", "YTID": spec.get("ytid") or ""})
+            yt = yt_sub_lyrics(audio, yt_meta)
             if yt is not None:
                 cands, line_times = yt
                 source = "yt"
@@ -399,8 +400,9 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
     side.update(lyrics_source=source, language=lang_name, separation=sep)
     side["lyrics"] = lyrics_summary(cands, info, source)
     from .batch import yt_sidecar_fields
-    side.update(yt_sidecar_fields(audio, {"ARTIST": artist, "TITLE": title},
-                                  [w for s in asr for w in s.words]))
+    # same ids as the lyrics lookup: the ytid may live only in the job spec, and
+    # yt_subs_search must not retry (nor resolve) it a second time here
+    side.update(yt_sidecar_fields(audio, yt_meta, [w for s in asr for w in s.words]))
     (out / "song.ultraai.json").write_text(json.dumps(side, ensure_ascii=False), encoding="utf-8")
     n_issues = sum(1 for i in info.get("issues", []))
     log.info("done in %.0f s: %d lines, %d issues, structure %s", time.time() - t0,

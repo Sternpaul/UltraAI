@@ -12,8 +12,10 @@ corrupt cache) yields ``None`` / ``[]`` / ``0.0``.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -34,7 +36,7 @@ YT_URL = "https://www.youtube.com/watch?v={ytid}"
 
 # --sub-langs value: manual languages first; auto captions only fill languages
 # without a manual track (that per-language preference is yt-dlp's own).
-SUB_LANGS = ["en", "en-US", "en-GB", "el"]
+SUB_LANGS = ["en", "en-US", "en-GB", "de", "el"]
 
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW, as in studio/importer.py
 
@@ -68,23 +70,43 @@ def _run(cmd: list[str]) -> str:
 _sleep = time.sleep  # injectable for tests
 
 _MAX_ATTEMPTS = 3
-_BACKOFF_S = (5.0, 20.0, 60.0)  # exponential backoff between 429 retries (+ jitter)
+_BACKOFF_S = (5.0, 20.0)  # backoff between 429 retries (+ jitter), one entry per sleep
+
+_impersonate_warned = False
+
+
+def _impersonation_available(target: str) -> bool:
+    """Whether yt-dlp can really impersonate: curl_cffi is what it does TLS with.
+
+    curl_cffi is a [worker] extra, so it may be missing (Studio-only installs, CI);
+    without the guard every yt-dlp run fails on ``--impersonate``.  Warns once per
+    process when impersonation was requested but is not possible."""
+    global _impersonate_warned
+    if importlib.util.find_spec("curl_cffi") is not None:
+        return True
+    if not _impersonate_warned:
+        _impersonate_warned = True
+        log.warning("ULTRAAI_YT_IMPERSONATE=%s is set but curl_cffi is not installed; "
+                    "yt-dlp runs without browser impersonation (pip install curl_cffi)", target)
+    return False
 
 
 def _ytdlp_extra() -> list[str]:
-    """Extra yt-dlp CLI args from config: ``--impersonate <target>`` (ULTRAAI_YT_IMPERSONATE),
-    ``--sleep-subtitles <s>`` (ULTRAAI_YT_SLEEP_SUBS, YouTube restricts auto-subs for
-    sessions younger than ~60 s) and ``--cookies <path>`` when ULTRAAI_COOKIES names an
-    existing file.  Only the path is ever passed on — the cookies file is a secret and
-    its contents are never logged, printed or committed."""
+    """Extra yt-dlp CLI args from config: ``--impersonate <target>`` (ULTRAAI_YT_IMPERSONATE,
+    only when curl_cffi is installed), ``--sleep-subtitles <s>`` (ULTRAAI_YT_SLEEP_SUBS,
+    YouTube restricts auto-subs for sessions younger than ~60 s) and ``--cookies <path>``
+    when ULTRAAI_COOKIES names an existing file.  Only the path is ever passed on —
+    the cookies file is a secret and its contents are never logged, printed or committed."""
     args: list[str] = []
     target = config.get("yt_impersonate").strip()
-    if target:
+    if target and _impersonation_available(target):
         args += ["--impersonate", target]
     try:
         sleep_s = float(config.get("yt_sleep_subs") or 0)
     except ValueError:
         sleep_s = 0.0
+    if not (math.isfinite(sleep_s) and 0 < sleep_s < 1e6):
+        sleep_s = 0.0  # inf/nan/out-of-range: same as an unparseable value
     if sleep_s > 0:
         args += ["--sleep-subtitles", str(int(sleep_s))]
     path = config.get("cookies").strip()
@@ -93,12 +115,17 @@ def _ytdlp_extra() -> list[str]:
     return args
 
 
+_429_RE = re.compile(r"http error 429|http 429|too many requests|rate[- ]?limit", re.I)
+
+
 def _looks_429(text: str) -> bool:
-    return "429" in (text or "")
+    """Actual rate-limit signatures, not any '429' substring: a video id printed by
+    --print id can contain '429' without anything being rate-limited."""
+    return bool(_429_RE.search(text or ""))
 
 
 def _run_ytdlp(cmd: list[str]) -> str | None:
-    """``_run`` with 429 resilience: up to 3 attempts, backoff 5s/20s/60s + jitter.
+    """``_run`` with 429 resilience: up to 3 attempts, backoff 5s/20s + jitter.
 
     A 429 in the output or in the failure message is retried; after the last attempt a
     warning points at ULTRAAI_COOKIES and None is returned.  Any other failure
@@ -110,6 +137,10 @@ def _run_ytdlp(cmd: list[str]) -> str | None:
                 return out
         except RuntimeError as exc:
             if not _looks_429(str(exc)):
+                if "impersonate" in str(exc).lower():
+                    log.warning("yt-dlp failed on --impersonate (%s); check "
+                                "ULTRAAI_YT_IMPERSONATE (needs curl_cffi)",
+                                str(exc).strip()[-200:])
                 raise
         if attempt + 1 < _MAX_ATTEMPTS:
             delay = _BACKOFF_S[attempt] + random.uniform(0.0, 1.0)
@@ -129,21 +160,21 @@ def _cache_write(cache: Path, data) -> None:
 
 
 def _pick_sub_file(tmp: Path) -> Path | None:
-    """Choose the json3 file to keep: manual (unmarked) over auto ('.auto.' in the
-    name), then the language that comes first in SUB_LANGS."""
-    files = sorted(tmp.glob("*.json3"))
-    if not files:
-        return None
+    """Choose the json3 file to keep: the language that comes first in SUB_LANGS.
 
+    yt-dlp writes the manual and the auto track of the same language to the same
+    file name (no ``.auto.`` marker), preferring the manual track itself, so what
+    is left to pick here is the language."""
     def key(f: Path):
         lang = f.name[len("sub."):-len(".json3")] if f.name.startswith("sub.") else f.stem
         try:
             order = SUB_LANGS.index(lang)
         except ValueError:
             order = len(SUB_LANGS)
-        return (".auto." in f.name, order, f.name)
+        return (order, f.name)
 
-    return sorted(files, key=key)[0]
+    files = sorted(tmp.glob("*.json3"))
+    return sorted(files, key=key)[0] if files else None
 
 
 def fetch_subs(ytid: str, manual: bool = True) -> dict | None:

@@ -53,13 +53,16 @@ def progress_dict(server: dict | None, upload: str = "done", download: str = "pe
 class Processor:
     """Base: job preparation and result ingestion shared by local and remote processing."""
 
-    def __init__(self, lib: Library, log=None, separation: str | None = None):
+    def __init__(self, lib: Library, log=None, separation: str | None = None, cookies: str = ""):
         self.lib, self.separation = lib, separation
+        self.cookies = (cookies or "").strip()  # Studio-set cookies.txt path (a secret; never logged)
 
     def job_spec(self, sid: str, job_id: str) -> dict:
         st = self.lib.state(sid)
         spec = {"id": job_id, "audio": "audio" + Path(st.audio).suffix.lower(), "artist": st.artist,
                 "title": st.title, "language": st.language}
+        if self.cookies:  # applied by the worker via ULTRAAI_COOKIES (see worker.apply_options)
+            spec["cookies"] = self.cookies
         if self.separation:
             spec["separation"] = self.separation
         if st.options:
@@ -231,8 +234,9 @@ class SshProcessor(Processor):
     start_template = REMOTE_START
 
     def __init__(self, lib: Library, transport: SshTransport, remote_dir: str = "UltraAI",
-                 ultraai: str = ".venv/bin/ultraai", log=print, separation: str | None = None):
-        super().__init__(lib, log, separation)
+                 ultraai: str = ".venv/bin/ultraai", log=print, separation: str | None = None,
+                 cookies: str = ""):
+        super().__init__(lib, log, separation, cookies)
         self.t, self.dir, self.ultraai = transport, remote_dir, ultraai
 
     def check(self) -> str:

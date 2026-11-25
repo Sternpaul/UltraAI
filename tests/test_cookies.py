@@ -123,8 +123,8 @@ def test_429_in_stderr_retries_then_none_and_warns(cache_dir, cookies_file, monk
         assert ytsubs.fetch_subs("ck4") is None  # no exception
     assert len(calls) == 3                      # max 3 attempts
     assert len(sleeps) == 2                     # backoff before attempts 2 and 3
-    assert 5.0 <= sleeps[0] < 5.0 + 60.0
-    assert 20.0 <= sleeps[1] < 20.0 + 60.0
+    assert 5.0 <= sleeps[0] < 6.0               # 5 s + 0..1 s jitter
+    assert 20.0 <= sleeps[1] < 21.0             # 20 s + 0..1 s jitter
     assert any("rate-limited (429)" in r.message and "ULTRAAI_COOKIES" in r.message
                for r in caplog.records)
     assert FAKE_COOKIE_MARKER not in caplog.text  # cookie contents never logged
@@ -158,7 +158,7 @@ def test_success_after_one_429_retry_returns_data(cache_dir, cookies_file, monke
 
     monkeypatch.setattr(ytsubs, "_run", fake)
     assert ytsubs.fetch_subs("ck5") == SAMPLE
-    assert len(calls) == 2 and len(sleeps) == 1 and 5.0 <= sleeps[0] < 5.0 + 60.0
+    assert len(calls) == 2 and len(sleeps) == 1 and 5.0 <= sleeps[0] < 6.0
 
 
 def test_non_429_failure_does_not_retry(cache_dir, monkeypatch, sleeps):
@@ -171,6 +171,31 @@ def test_non_429_failure_does_not_retry(cache_dir, monkeypatch, sleeps):
     monkeypatch.setattr(ytsubs, "_run", fake)
     assert ytsubs.fetch_subs("ck6") is None
     assert len(calls) == 1 and sleeps == []
+
+
+@pytest.mark.parametrize("text", [
+    "ERROR: [youtube] xyz: HTTP Error 429: Too Many Requests",
+    "WARNING: unable to download video: HTTP 429",
+    "ERROR: Too Many Requests; open a issue",
+    "rate-limit exceeded for this client",
+    "Sign in to confirm you're not a bot (rate limit reached)",
+])
+def test_looks_429_matches_rate_limit_signatures(text):
+    assert ytsubs._looks_429(text)
+
+
+@pytest.mark.parametrize("text", ["XR7Z429qLm3", "duration: 429 seconds", "", None])
+def test_looks_429_ignores_bare_429_substrings(text):
+    """A '429' on its own can be a video id or a number — not a rate limit."""
+    assert not ytsubs._looks_429(text)
+
+
+def test_resolve_ytid_returns_id_containing_429_without_retry(cache_dir, monkeypatch, sleeps):
+    """--print id output whose video id happens to contain '429' is not a rate limit."""
+    monkeypatch.delenv("ULTRAAI_COOKIES", raising=False)
+    monkeypatch.setattr(ytsubs, "_run", lambda cmd: "XR7Z429qLm3\n")
+    assert ytsubs.resolve_ytid("Some Artist - Some Title") == "XR7Z429qLm3"
+    assert sleeps == []  # no backoff, no discarded attempts
 
 
 def test_resolve_ytid_caches_with_cookies(cache_dir, cookies_file, monkeypatch):
@@ -239,9 +264,125 @@ def test_settings_put_accepts_existing_file_and_get_returns_path(studio_client, 
     f.write_text(f"# fake {FAKE_COOKIE_MARKER}\n", encoding="utf-8")
     r = client.put("/api/settings", json={"cookies": str(f)}, headers=H)
     assert r.status_code == 200, r.text
-    assert settings.cookies == str(f)
+    assert settings.cookies == str(f.resolve())  # stored canonical (resolved) form
     got = client.get("/api/settings").json()
-    assert got["cookies"] == str(f)  # a path is not secret
+    assert got["cookies"] == str(f.resolve())  # a path is not secret
     # clearing works too
     r = client.put("/api/settings", json={"cookies": ""}, headers=H)
     assert r.status_code == 200 and settings.cookies == ""
+
+
+# ---------------------------------------------------------------- studio wiring
+# The Studio settings dialog stores the cookies path; the wiring has to carry it into
+# every place that talks to YouTube: direct imports (importer) and worker jobs (spec).
+
+def _fake_ytdlp(monkeypatch):
+    """A fake yt_dlp module capturing the opts YoutubeDL is constructed with."""
+    import sys
+    import types
+
+    mod = types.ModuleType("yt_dlp")
+    captured: dict = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            captured["opts"] = dict(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download=False):
+            captured["url"] = url
+            return {"id": "UbstNV2FUNY", "artist": "Artist", "track": "Title", "uploader": "chan"}
+
+    mod.YoutubeDL = FakeYDL
+    monkeypatch.setitem(sys.modules, "yt_dlp", mod)
+    return captured
+
+
+def test_youtube_info_uses_the_explicit_cookies_path(tmp_path, monkeypatch):
+    from ultraai.studio import importer
+
+    f = tmp_path / "cookies.txt"
+    f.write_text(f"# fake {FAKE_COOKIE_MARKER}\n", encoding="utf-8")
+    captured = _fake_ytdlp(monkeypatch)
+    importer.youtube_info("https://youtu.be/x", str(f))
+    assert captured["opts"]["cookiefile"] == str(f)
+    # a path that exists but does not name a file is ignored, like in ytsubs
+    importer.youtube_info("https://youtu.be/x", str(tmp_path / "missing.txt"))
+    assert "cookiefile" not in captured["opts"]
+
+
+def test_youtube_info_env_var_fallback(tmp_path, monkeypatch):
+    from ultraai.studio import importer
+
+    f = tmp_path / "cookies.txt"
+    f.write_text("# fake\n", encoding="utf-8")
+    monkeypatch.setenv("ULTRAAI_COOKIES", str(f))
+    captured = _fake_ytdlp(monkeypatch)
+    importer.youtube_info("https://youtu.be/x")  # no explicit path: ULTRAAI_COOKIES applies
+    assert captured["opts"]["cookiefile"] == str(f)
+
+
+def test_import_youtube_passes_settings_cookies_to_downloads(tmp_path, monkeypatch):
+    from ultraai.studio import importer
+    from ultraai.studio.store import Library
+
+    lib = Library(tmp_path / "lib")
+    url = "https://www.youtube.com/watch?v=UbstNV2FUNY"
+    ck = tmp_path / "cookies.txt"
+    ck.write_text(f"# fake {FAKE_COOKIE_MARKER}\n", encoding="utf-8")
+    seen = {}
+
+    def fake_info(u, cookies=None):
+        seen["info"] = cookies
+        return {"id": "UbstNV2FUNY", "artist": "Artist", "track": "Title", "uploader": "chan"}
+
+    def fake_download(u, fmt, dest, hook=None, cookies=None):
+        seen["dl"] = cookies
+        f = dest / "dl.m4a"
+        f.write_bytes(b"\x00")
+        return f
+
+    monkeypatch.setattr(importer, "youtube_info", fake_info)
+    monkeypatch.setattr(importer, "_download", fake_download)
+    monkeypatch.setattr(importer, "remux_audio", lambda p: p)
+
+    class Settings:
+        youtube_audio = "m4a"
+        youtube_video = "none"
+        youtube_cover = False
+        cookies = str(ck)
+
+    importer.import_youtube(lib, url, settings=Settings())
+    assert seen["info"] == seen["dl"] == str(ck)
+
+    # no cookies in settings (or none at all): falls back to the env var inside yt-dlp
+    monkeypatch.setattr(importer, "youtube_info",
+                        lambda u, cookies=None: seen.update(none=cookies) or fake_info(u, cookies))
+    Settings.cookies = ""
+    importer.import_youtube(lib, url, settings=Settings())
+    assert seen["none"] is None
+
+
+def test_make_processor_job_spec_carries_the_cookies_path(tmp_path):
+    from ultraai.studio.app import make_processor
+    from ultraai.studio.config import Settings
+    from ultraai.studio.store import Library
+
+    lib = Library(tmp_path / "lib")
+    st = lib.create("Artist", "Title")
+    a = tmp_path / "a.m4a"
+    a.write_bytes(b"\x00")
+    lib.add_audio(st.id, a)
+    ck = str(tmp_path / "cookies.txt")
+
+    settings = Settings(library=str(tmp_path / "lib"), processor="local", cookies=ck)
+    spec = make_processor(settings, lib).job_spec(st.id, "job1")
+    assert spec["cookies"] == ck  # worker.apply_options forwards it into ULTRAAI_COOKIES
+
+    settings.cookies = ""  # unset: the env var stays the only source
+    assert "cookies" not in make_processor(settings, lib).job_spec(st.id, "job2")
