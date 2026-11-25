@@ -316,18 +316,47 @@ def youtube_id(url: str) -> str | None:
     return m.group(1) if m else None
 
 
+def youtube_cover_url(yt: str) -> str:
+    """The cover of the YouTube video itself — the thumbnail USDB Syncer can download."""
+    return f"https://img.youtube.com/vi/{yt}/hqdefault.jpg"
+
+
 def usdb_text(txt_text: str, source: str) -> str:
-    """The song as USDB expects it: #VIDEO carries the meta tags (v=<YouTube id>) that
-    USDB Syncer uses to fetch audio and video; local-only lines are left out."""
+    """The song as USDB expects it. USDB hosts only the txt, so every media file must be a
+    link, and the links live inside #VIDEO as USDB Syncer meta tags — a comma-separated
+    list of key=value pairs: v=<YouTube id> for audio/video, co=<cover url> for the cover
+    (the thumbnail of that same video, unless the txt already links one), plus whatever
+    the txt already had (preview=…, medley=…, …). USDB Syncer rewrites the downloaded txt
+    to local file names; local-only lines are left out here."""
     from ..ultrastar.reader import parse
     from ..ultrastar.writer import dumps
 
     song = parse(txt_text)
     yt = youtube_id(source) or youtube_id(song.get("VIDEOURL") or "") or youtube_id(song.get("AUDIOURL") or "")
+    cover = song.get("COVERURL") or (youtube_cover_url(yt) if yt else None)
+    old_video = song.get("VIDEO") or ""
     for k in ("VIDEO", "VIDEOGAP", "AUDIOURL", "VIDEOURL", "COVERURL", "BACKGROUNDURL"):
         song.set(k, None)
+    # keep existing meta tags, then make sure v= and co= are set
+    params: dict[str, str] = {}
+    order: list[str] = []
+    for part in old_video.split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            if k not in params:
+                params[k] = v
+                order.append(k)
     if yt:
-        song.set("VIDEO", f"v={yt}")
+        params["v"] = yt
+        if "v" not in order:
+            order.insert(0, "v")
+    if cover and "co" not in params:
+        params["co"] = cover
+        order.append("co")
+    if order:
+        song.set("VIDEO", ",".join(f"{k}={params[k]}" for k in order))
+    if cover:
+        song.set("COVER", None)  # a local file name is meaningless on USDB
     return dumps(song)
 
 

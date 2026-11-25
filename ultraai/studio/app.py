@@ -337,7 +337,8 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
 
     @app.get("/api/songs/{sid}/usdb")
     def usdb(sid: str):
-        """The txt ready for USDB (YouTube id in #VIDEO as USDB Syncer meta tag)."""
+        """The txt ready for USDB: the #VIDEO meta tags (v=<YouTube id>, co=<cover url>)
+        link audio/video and cover — USDB Syncer downloads them from the links."""
         from fastapi.responses import PlainTextResponse
 
         from .store import usdb_text
