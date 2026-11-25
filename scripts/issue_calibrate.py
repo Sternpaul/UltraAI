@@ -10,14 +10,15 @@ share of flagged lines.  --save fits on everything and writes ultraai/issue_mode
 """
 import json
 import math
-import os
 import sys
 from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parent))
-from compare_runs import ref_shifted  # noqa: E402
+if __package__ in (None, ""):  # plain file run: python scripts/issue_calibrate.py
+    from compare_runs import ref_shifted
+else:  # module run: python -m scripts.issue_calibrate
+    from scripts.compare_runs import ref_shifted
 
 from ultraai import issues as iss  # noqa: E402
 from ultraai.eval.harness import load_cases  # noqa: E402

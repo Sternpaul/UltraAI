@@ -22,6 +22,7 @@ from pathlib import Path
 os.environ.setdefault("ULTRAAI_SEPARATION", "htdemucs")
 
 from ultraai.audio import work_dir  # noqa: E402
+from ultraai.byproducts import write_byproducts  # noqa: E402
 from ultraai.eval.harness import GENERATORS, load_cases  # noqa: E402
 from ultraai.eval.metrics import compare  # noqa: E402
 from ultraai.generate import analyse  # noqa: E402
@@ -38,6 +39,11 @@ def log(out: Path, msg: str) -> None:
     print(line, flush=True)
     with open(out / "progress.log", "a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def backoff_s(failures: int) -> int:
+    """Seconds to wait after `failures` consecutive song failures (60 s each, capped at 1 h)."""
+    return min(3600, 60 * failures)
 
 
 def main(root="library", out="out/library"):
@@ -66,6 +72,8 @@ def main(root="library", out="out/library"):
             asr = transcribe(a.vocals.with_name(a.vocals.stem + ".mono16000.wav"), lang, wave=a.wave)
             row["asr_words"] = sum(len(s.words) for s in asr)
             row["t_asr"] = round(time.time() - t0) - row["t_analyse"]
+            from ultraai.batch import yt_sidecar_fields
+            row.update(yt_sidecar_fields(case.audio, case.metadata, [w for s in asr for w in s.words]))
             for gen in ("m2", "m3"):
                 buf = io.StringIO()
                 try:
@@ -73,6 +81,7 @@ def main(root="library", out="out/library"):
                         hyp = GENERATORS[gen](case)
                     (out / gen).mkdir(exist_ok=True)
                     write(hyp, out / gen / f"{case.name}.txt")
+                    write_byproducts(hyp, out / gen / f"{case.name}.txt")
                     row[gen] = {k: (round(v, 4) if isinstance(v, float) else v)
                                 for k, v in compare(case.reference, hyp).items()}
                     row[gen]["log"] = buf.getvalue().strip()[-300:]
@@ -93,8 +102,10 @@ def main(root="library", out="out/library"):
         log(out, f"[{k}/{len(todo)}] {case.name[:50]}  {row['seconds']} s  "
                  f"m3 within250={m3.get('onset_within_250ms', float('nan')):.3f}  {row.get('error', '')}")
         if failures >= 5:
-            log(out, "stopping: 5 songs in a row failed - something is broken, see results.jsonl")
-            break
+            delay = backoff_s(failures)
+            log(out, f"{failures} songs in a row failed - backing off {delay} s, then continuing "
+                     f"(see results.jsonl)")
+            time.sleep(delay)
     else:
         log(out, "finished")
 

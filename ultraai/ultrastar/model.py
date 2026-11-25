@@ -30,6 +30,8 @@ class Note:
     length: int        # beats
     pitch: int         # semitones relative to C4 (MIDI = pitch + 60)
     text: str          # syllable incl. leading/trailing spaces; "~" = continuation
+    auto_fixed: bool = False  # pitch auto-corrected by the double-check consensus (B3); not part
+                              # of the USDX note line - serialised in the post-'E' trailer
 
     @property
     def end(self) -> int:

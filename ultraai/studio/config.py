@@ -25,6 +25,7 @@ class Settings:
     youtube_audio: str = "best"         # "best": usually Opus, remuxed to .ogg; "m4a": AAC
     youtube_video: str = "1080"         # "none" | "720" | "1080" | "best"  (music video for USDX)
     youtube_cover: bool = True          # thumbnail as #COVER
+    cookies: str = ""                   # path to a Netscape cookies.txt for yt-dlp (--cookies); the file is a secret, never logged
     separation: str = "htdemucs"        # "htdemucs": ~5 min, measured; "melband": slower, cleaner vocals
     log_level: str = "info"             # trace | debug | info | warning | error
     defaults: dict = field(default_factory=dict)  # processing options pre-selected for new songs

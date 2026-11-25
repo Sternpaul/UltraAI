@@ -70,6 +70,15 @@ def dumps(song: Song, reorder: bool = True, newline: str = "\n") -> str:
                 beat = line.break_beat if line.break_beat is not None else line.end
                 out.append(f"- {beat}")
     out.append("E")
+    # Trailer after 'E' (USDX ignores everything after 'E'): which notes the double-check
+    # consensus auto-corrected - see the 'auto-fixed' issues in the .ultraai.json sidecar.
+    fixed: dict[int, list[int]] = {}
+    for v in voices:
+        for idx, n in enumerate(song.notes(v)):
+            if n.auto_fixed:
+                fixed.setdefault(v, []).append(idx)
+    for v in sorted(fixed):
+        out.append(f"#ULTRAAI-AUTOFIX:{v}:" + ",".join(str(k) for k in fixed[v]))
     return newline.join(out) + newline
 
 

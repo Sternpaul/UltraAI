@@ -13,6 +13,11 @@ editor), editor.json (pitch curve, waveform peaks, Whisper words).  Progress in
 JOBDIR/status.json: {"state": queued|running|done|needs_lyrics|error, "stage", "error", ...}.
 Jobs run one at a time per machine (file lock); expensive steps are cached per audio file,
 so re-running a job with new lyrics takes seconds.
+
+Lyrics come from the job's "lyrics" (user-pasted) when present, else LRCLIB, else —
+as a last resort — YouTube subtitles when a video id is known for the audio (a .ytid
+sidecar, a #VIDEO:v= header, or a search when yt_subs_search is on).  Subtitles are
+last because caption text rarely matches the sung lyrics (measured, see BENCHMARK.md).
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ import time
 import traceback
 from pathlib import Path
 
+from . import config
 from .audio import CACHE_DIR, DEFAULT_SEPARATION
 
 STATES = ("queued", "running", "done", "needs_lyrics", "error")
@@ -83,27 +89,30 @@ PRIOR_RATE = {"separate:htdemucs": 1.6, "separate:htdemucs_ft": 5.0, "separate:m
               "lead:kara2": 1.2, "lead:melkara": 6.0,
               "pitch:swift": 0.02, "pitch:pesto": 0.25, "pitch:crepe-tiny": 0.35, "pitch:crepe-full": 5.0}
 
-# per-song options from the Studio -> environment of this (one-job) process
-OPTION_ENV = {"pitch": "ULTRAAI_PITCH", "pitch_check": "ULTRAAI_PITCH_CHECK", "sep_check": "ULTRAAI_SEP_CHECK",
-              "lead": "ULTRAAI_LEAD", "notes": "ULTRAAI_NOTES"}
+# per-song options from the Studio (job.json) -> environment of this (one-job) process
+OPTION_KEYS = ("pitch", "pitch_check", "sep_check", "lead", "notes")
 
 
 def apply_options(spec: dict) -> dict:
     opts = dict(spec.get("options") or {})
-    for k, env in OPTION_ENV.items():
+    for k in OPTION_KEYS:
         v = opts.get(k)
         if isinstance(v, list):
             v = ",".join(v)
+        env = config.env_of(k)
         if v:
             os.environ[env] = str(v)
         else:
             os.environ.pop(env, None)
+    cookies = (spec.get("options") or {}).get("cookies") or spec.get("cookies")
+    if cookies:  # a path, never contents: forwarded into this job's env when the job sets it
+        os.environ[config.env_of("cookies")] = str(cookies)
     return opts
 RATES_FILE = CACHE_DIR / "stage_rates.json"
 
 
-def _env_list(name: str) -> list[str]:
-    return [m.strip() for m in os.environ.get(name, "").split(",") if m.strip()]
+def _env_list(key: str) -> list[str]:
+    return config.get_list(key)
 _current: "Progress | None" = None
 
 
@@ -136,15 +145,15 @@ class Progress:
             return float(self.rates.get(k) or models.rate(group, model))
 
         if key == "checks":  # extra separations + pitch models: depends on the options
-            r = sum(known(f"separate:{m}", "separation", m) for m in _env_list("ULTRAAI_SEP_CHECK") if m != self.sep)
-            return r + sum(models.rate("pitch", m) for m in _env_list("ULTRAAI_PITCH_CHECK"))
+            r = sum(known(f"separate:{m}", "separation", m) for m in _env_list("sep_check") if m != self.sep)
+            return r + sum(models.rate("pitch", m) for m in _env_list("pitch_check"))
         if key == "separate":
             return known(f"separate:{self.sep}", "separation", self.sep)
         r = float(self.rates.get(key, PRIOR_RATE.get(key, 0.5)))
         if key == "analyse":
-            if os.environ.get("ULTRAAI_LEAD"):
-                r += models.rate("lead", os.environ["ULTRAAI_LEAD"])
-            r += models.rate("pitch", os.environ.get("ULTRAAI_PITCH", "swift"))
+            if config.get("lead"):
+                r += models.rate("lead", config.get("lead"))
+            r += models.rate("pitch", config.get("pitch"))
         return r
 
     def start(self, key: str) -> None:
@@ -234,8 +243,7 @@ def _job_logging(out: Path) -> logging.Handler:
 
 
 # background work on the server that must give way completely while a song is processed
-BACKGROUND_UNITS = os.environ.get("ULTRAAI_BACKGROUND_UNITS",
-                                  "ultraai-bench.service ultraai-library.service ultraai-after-run.service").split()
+BACKGROUND_UNITS = config.get("background_units").split()  # read once at import (see config.py)
 
 
 def _systemctl(*args: str) -> str:
@@ -298,6 +306,7 @@ def process(job: Path) -> dict:
 def _process(job: Path, spec: dict, out: Path) -> dict:
     from .audio import separate
     from .batch import detect_language, greeklish
+    from .byproducts import write_byproducts
     from .generate import analyse, generate_from_lines, generate_sung
     from .lrc import fetch_candidates
     from .lyrics import language_code
@@ -320,8 +329,8 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
     separate(audio, sep, need_instrumental=False)
     pr.start("analyse")
     a = analyse(audio, sep)
-    pitch_checks = [m for m in _env_list("ULTRAAI_PITCH_CHECK") if m != os.environ.get("ULTRAAI_PITCH", "swift")]
-    sep_checks = [m for m in _env_list("ULTRAAI_SEP_CHECK") if m != sep]
+    pitch_checks = [m for m in _env_list("pitch_check") if m != config.get("pitch")]
+    sep_checks = [m for m in _env_list("sep_check") if m != sep]
     if pitch_checks or sep_checks:
         from .generate import pitch_track
         from .audio import load_mono
@@ -331,16 +340,26 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
             pitch_track(a.vocals, a.wave, m)
         for m in sep_checks:
             v2, _ = separate(audio, m, need_instrumental=False)
-            pitch_track(v2, load_mono(v2, 16000), os.environ.get("ULTRAAI_PITCH", "swift"))
+            pitch_track(v2, load_mono(v2, 16000), config.get("pitch"))
     else:
         pr.skip("checks", "not chosen")
-    # lyrics: user-supplied, else LRCLIB
+    # lyrics: user-supplied > LRCLIB > YouTube subs (last resort: caption text rarely
+    # matches the sung lyrics — measured word_recall -60.8, see BENCHMARK.md)
+    line_times: list[float] | None = None
+    yt_meta = {"ARTIST": artist, "TITLE": title,
+               "SOURCE": spec.get("source") or "", "YTID": spec.get("ytid") or ""}
     if spec.get("lyrics"):
         pr.skip("lyrics", "your lyrics")
         cands, source = lyrics_candidates(spec["lyrics"], artist, title), "user"
     else:
         pr.start("lyrics")
         cands, source = fetch_candidates(artist, title, audio), "LRCLIB"
+        if not cands:
+            from .batch import yt_sub_lyrics
+            yt = yt_sub_lyrics(audio, yt_meta)
+            if yt is not None:
+                cands, line_times = yt
+                source = "yt"
     log.info("lyrics: %s, %d version(s)", source, len(cands))
     cands = [c for c in cands if c.texts]
     lang_name = spec.get("language") or ""
@@ -368,16 +387,22 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
         if spec.get(k.lower()):
             meta[k] = str(spec[k.lower()])
     try:
-        song, info = generate_sung(audio, cands, code or "xx", meta, separation=sep)
+        song, info = generate_sung(audio, cands, code or "xx", meta, separation=sep,
+                                   line_times=line_times)
     except LookupError:
-        song, info = generate_from_lines(audio, cands[0].texts, None, code or "xx", meta, sep)
+        song, info = generate_from_lines(audio, cands[0].texts, line_times, code or "xx", meta, sep)
     song.set("MP3", spec["audio"])
     song.set("AUDIO", spec["audio"])
     write(song, out / "song.txt")
+    write_byproducts(song, out / "song.txt")
     side = {k: info.get(k) for k in ("issues", "words", "lines", "risk_model", "structure", "candidate",
                                       "candidates", "anchored", "asr_coverage")}
     side.update(lyrics_source=source, language=lang_name, separation=sep)
     side["lyrics"] = lyrics_summary(cands, info, source)
+    from .batch import yt_sidecar_fields
+    # same ids as the lyrics lookup: the ytid may live only in the job spec, and
+    # yt_subs_search must not retry (nor resolve) it a second time here
+    side.update(yt_sidecar_fields(audio, yt_meta, [w for s in asr for w in s.words]))
     (out / "song.ultraai.json").write_text(json.dumps(side, ensure_ascii=False), encoding="utf-8")
     n_issues = sum(1 for i in info.get("issues", []))
     log.info("done in %.0f s: %d lines, %d issues, structure %s", time.time() - t0,

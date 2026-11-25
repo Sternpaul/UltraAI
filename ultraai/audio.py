@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -14,7 +13,9 @@ import soundfile as sf
 
 log = logging.getLogger(__name__)
 
-CACHE_DIR = Path(os.environ.get("ULTRAAI_CACHE", Path.home() / ".cache" / "ultraai"))
+from . import config  # noqa: E402
+
+CACHE_DIR = Path(config.get("cache") or Path.home() / ".cache" / "ultraai")  # read once at import
 MODEL_DIR = CACHE_DIR / "models"
 
 # Separation models (audio-separator names). Quality vs. CPU time trade-off.
