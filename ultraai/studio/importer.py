@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import re
 import tempfile
 from pathlib import Path
@@ -51,9 +52,32 @@ def import_file(lib: Library, path: Path, original_name: str | None = None, move
     return lib.state(st.id)
 
 
+_impersonate_warned = False
+
+
+def _impersonation_available(target: str) -> bool:
+    """Whether yt-dlp can really impersonate: curl_cffi is what it does TLS with.
+
+    curl_cffi is a [worker] extra, so the base (Studio) install may not have it;
+    passing ``impersonate`` to YoutubeDL then fails for every YouTube request.
+    Same rule as ytsubs._impersonation_available() (duplicated here: importing
+    ytsubs would pull in numpy via audio.py).  Warns once per process when
+    impersonation was requested but is not possible."""
+    global _impersonate_warned
+    if importlib.util.find_spec("curl_cffi") is not None:
+        return True
+    if not _impersonate_warned:
+        _impersonate_warned = True
+        log.warning("ULTRAAI_YT_IMPERSONATE=%s is set but curl_cffi is not installed; "
+                    "YouTube requests run without browser impersonation "
+                    "(pip install curl_cffi)", target)
+    return False
+
+
 def _cookie_opts() -> dict:
     """yt-dlp options from config: ``cookiefile`` when ULTRAAI_COOKIES names an existing
-    file and ``impersonate`` from ULTRAAI_YT_IMPERSONATE (lifts most YouTube 429s).
+    file and ``impersonate`` from ULTRAAI_YT_IMPERSONATE (lifts most YouTube 429s; only
+    when curl_cffi is installed).
 
     Same rule as ytsubs._ytdlp_extra() (duplicated here: importing ytsubs would
     pull in numpy via audio.py).  Only the path is passed on — the file is a secret.
@@ -65,8 +89,8 @@ def _cookie_opts() -> dict:
     if path and Path(path).is_file():
         opts["cookiefile"] = path
     target = config.get("yt_impersonate").strip()
-    if target:
-        opts["impersonate"] = target
+    if target and _impersonation_available(target):
+        opts["impersonate"] = target  # dropped when curl_cffi is missing (yt_dlp default is None)
     return opts
 
 

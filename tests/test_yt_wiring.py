@@ -160,6 +160,9 @@ def test_generate_sung_uses_line_times_as_anchors(tmp_path, monkeypatch):
         pitch = None
 
     monkeypatch.setattr(generate, "analyse", lambda *a, **k: FakeAnalysis())
+    # the third sub-case (no line_times) fills line times from audio_duration() ->
+    # ffprobe; stub it (not on every CI runner), 0.0 falls back to the wave length
+    monkeypatch.setattr("ultraai.lrc.audio_duration", lambda p: 0.0)
     asr = [AsrSegment(t, t + 1.0, ln, [AsrWord(t, t + 0.5, w, 0.9) for w in ln.split()])
            for t, ln in zip(SUB_TIMES, SUB_LINES)]
     monkeypatch.setattr("ultraai.transcribe.transcribe", lambda *a, **k: asr)

@@ -12,8 +12,10 @@ corrupt cache) yields ``None`` / ``[]`` / ``0.0``.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -70,21 +72,41 @@ _sleep = time.sleep  # injectable for tests
 _MAX_ATTEMPTS = 3
 _BACKOFF_S = (5.0, 20.0, 60.0)  # exponential backoff between 429 retries (+ jitter)
 
+_impersonate_warned = False
+
+
+def _impersonation_available(target: str) -> bool:
+    """Whether yt-dlp can really impersonate: curl_cffi is what it does TLS with.
+
+    curl_cffi is a [worker] extra, so it may be missing (Studio-only installs, CI);
+    without the guard every yt-dlp run fails on ``--impersonate``.  Warns once per
+    process when impersonation was requested but is not possible."""
+    global _impersonate_warned
+    if importlib.util.find_spec("curl_cffi") is not None:
+        return True
+    if not _impersonate_warned:
+        _impersonate_warned = True
+        log.warning("ULTRAAI_YT_IMPERSONATE=%s is set but curl_cffi is not installed; "
+                    "yt-dlp runs without browser impersonation (pip install curl_cffi)", target)
+    return False
+
 
 def _ytdlp_extra() -> list[str]:
-    """Extra yt-dlp CLI args from config: ``--impersonate <target>`` (ULTRAAI_YT_IMPERSONATE),
-    ``--sleep-subtitles <s>`` (ULTRAAI_YT_SLEEP_SUBS, YouTube restricts auto-subs for
-    sessions younger than ~60 s) and ``--cookies <path>`` when ULTRAAI_COOKIES names an
-    existing file.  Only the path is ever passed on — the cookies file is a secret and
-    its contents are never logged, printed or committed."""
+    """Extra yt-dlp CLI args from config: ``--impersonate <target>`` (ULTRAAI_YT_IMPERSONATE,
+    only when curl_cffi is installed), ``--sleep-subtitles <s>`` (ULTRAAI_YT_SLEEP_SUBS,
+    YouTube restricts auto-subs for sessions younger than ~60 s) and ``--cookies <path>``
+    when ULTRAAI_COOKIES names an existing file.  Only the path is ever passed on —
+    the cookies file is a secret and its contents are never logged, printed or committed."""
     args: list[str] = []
     target = config.get("yt_impersonate").strip()
-    if target:
+    if target and _impersonation_available(target):
         args += ["--impersonate", target]
     try:
         sleep_s = float(config.get("yt_sleep_subs") or 0)
     except ValueError:
         sleep_s = 0.0
+    if not (math.isfinite(sleep_s) and 0 < sleep_s < 1e6):
+        sleep_s = 0.0  # inf/nan/out-of-range: same as an unparseable value
     if sleep_s > 0:
         args += ["--sleep-subtitles", str(int(sleep_s))]
     path = config.get("cookies").strip()
@@ -110,6 +132,10 @@ def _run_ytdlp(cmd: list[str]) -> str | None:
                 return out
         except RuntimeError as exc:
             if not _looks_429(str(exc)):
+                if "impersonate" in str(exc).lower():
+                    log.warning("yt-dlp failed on --impersonate (%s); check "
+                                "ULTRAAI_YT_IMPERSONATE (needs curl_cffi)",
+                                str(exc).strip()[-200:])
                 raise
         if attempt + 1 < _MAX_ATTEMPTS:
             delay = _BACKOFF_S[attempt] + random.uniform(0.0, 1.0)
