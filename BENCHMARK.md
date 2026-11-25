@@ -161,8 +161,12 @@ cookies file we still only got 7/25; PO-token support would be the robust fix):
 
 - **As anchors/lyrics in m3: negative.** vs base m3 on the same 7 songs: timing −1.2,
   timing-rel −1.0, pitch −1.5, word_recall −3.9, line_f1 **−16.3** (sub line breaks don't
-  match reference phrasing). → `ULTRAAI_YT_ANCHOR` should default to **0**; subs stay a
-  fallback lyrics source for songs LRCLIB misses.
+  match reference phrasing — subs replaced the lyric *text* here). → `ULTRAAI_YT_ANCHOR`
+  should default to **0**; subs stay a fallback lyrics source for songs LRCLIB misses.
+- **Times-only variant (LRCLIB lyrics + sub-derived anchor times): also negative.**
+  line_f1/word_recall recover (−0.3 / 0.0) but timing drops: −3.7 / −4.8 (caption-chunk
+  starts ≠ musical line starts; only 3/7 songs engaged the anchored path). → subs are not
+  a useful timing source either.
 - **`yt_agreement`** (Whisper vs YouTube-ASR word agreement) is a useful free quality signal:
   mean 0.57 on the 7 songs, range 0.04–0.84 — garbled auto-captions are detectable this way.
 
