@@ -177,6 +177,7 @@ def test_generate_sung_uses_line_times_as_anchors(tmp_path, monkeypatch):
     # synced candidate + line_times: the sub times reach the anchored alignment unchanged
     song, info = generate.generate_sung(audio, [synced], "en", {}, line_times=sub_times)
     assert captured["times"] == sub_times
+    assert "yt_anchors_dropped" not in info
     # the transcript words ride along in info as JSON-serializable triples (sidecar metric)
     assert info["asr_word_list"] == [[1.0, 1.5, "one"], [1.0, 1.5, "two"], [5.0, 5.5, "three"],
                                      [5.0, 5.5, "four"], [9.0, 9.5, "five"], [9.0, 9.5, "six"]]
@@ -187,6 +188,10 @@ def test_generate_sung_uses_line_times_as_anchors(tmp_path, monkeypatch):
     # without line_times a plain candidate is timed from the transcript, not the subs
     generate.generate_sung(audio, [plain], "en", {})
     assert captured["times"] == SUB_TIMES
+    # line_times whose length doesn't match the lyrics are dropped — visibly
+    _, info = generate.generate_sung(audio, [plain], "en", {}, line_times=[2.0, 6.0])
+    assert info["yt_anchors_dropped"] is True
+    assert captured["times"] == SUB_TIMES  # timed from the transcript as before
 
 
 # ------------------------------------------------------------------ (c) yt_subs off
