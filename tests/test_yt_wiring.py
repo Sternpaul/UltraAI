@@ -160,9 +160,9 @@ def test_generate_sung_uses_line_times_as_anchors(tmp_path, monkeypatch):
         pitch = None
 
     monkeypatch.setattr(generate, "analyse", lambda *a, **k: FakeAnalysis())
-    # the third sub-case (no line_times) fills line times from audio_duration() ->
-    # ffprobe; stub it (not on every CI runner), 0.0 falls back to the wave length
-    monkeypatch.setattr("ultraai.lrc.audio_duration", lambda p: 0.0)
+    # the no-line_times case asks ffprobe for the audio duration (CI has no ffprobe)
+    from ultraai import lrc
+    monkeypatch.setattr(lrc, "audio_duration", lambda p: 30.0)
     asr = [AsrSegment(t, t + 1.0, ln, [AsrWord(t, t + 0.5, w, 0.9) for w in ln.split()])
            for t, ln in zip(SUB_TIMES, SUB_LINES)]
     monkeypatch.setattr("ultraai.transcribe.transcribe", lambda *a, **k: asr)
@@ -177,6 +177,7 @@ def test_generate_sung_uses_line_times_as_anchors(tmp_path, monkeypatch):
     # synced candidate + line_times: the sub times reach the anchored alignment unchanged
     song, info = generate.generate_sung(audio, [synced], "en", {}, line_times=sub_times)
     assert captured["times"] == sub_times
+    assert "yt_anchors_dropped" not in info
     # the transcript words ride along in info as JSON-serializable triples (sidecar metric)
     assert info["asr_word_list"] == [[1.0, 1.5, "one"], [1.0, 1.5, "two"], [5.0, 5.5, "three"],
                                      [5.0, 5.5, "four"], [9.0, 9.5, "five"], [9.0, 9.5, "six"]]
@@ -187,6 +188,10 @@ def test_generate_sung_uses_line_times_as_anchors(tmp_path, monkeypatch):
     # without line_times a plain candidate is timed from the transcript, not the subs
     generate.generate_sung(audio, [plain], "en", {})
     assert captured["times"] == SUB_TIMES
+    # line_times whose length doesn't match the lyrics are dropped — visibly
+    _, info = generate.generate_sung(audio, [plain], "en", {}, line_times=[2.0, 6.0])
+    assert info["yt_anchors_dropped"] is True
+    assert captured["times"] == SUB_TIMES  # timed from the transcript as before
 
 
 # ------------------------------------------------------------------ (c) yt_subs off
@@ -320,6 +325,30 @@ def test_find_ytid_ignores_malformed_sidecar(tmp_path, monkeypatch):
     assert batch.find_ytid(track.path, {}) == "AAAAAAAAAAA"  # falls through to the header
 
 
+def test_find_ytid_sibling_song_never_wins_in_multi_song_folder(tmp_path, monkeypatch):
+    track = _track(tmp_path)  # "Artist - Title.mp3"
+    meta = {"ARTIST": "Artist", "TITLE": "Title"}
+    (tmp_path / "Other - Song.txt").write_text(
+        "#TITLE:Song\n#ARTIST:Other\n#VIDEO:v=AAAAAAAAAAA\n", encoding="utf-8")
+    # a single candidate is used even though its stem differs from the audio
+    assert batch.find_ytid(track.path, meta) == "AAAAAAAAAAA"
+    # a second, foreign song makes the folder ambiguous: no silent sibling video
+    (tmp_path / "Third - Tune.txt").write_text(
+        "#TITLE:Tune\n#ARTIST:Third\n#VIDEO:v=CCCCCCCCCCC\n", encoding="utf-8")
+    assert batch.find_ytid(track.path, meta) is None
+    # ... unless a candidate matches the audio by stem ...
+    (tmp_path / "Artist - Title.txt").write_text(
+        "#TITLE:Title\n#ARTIST:Artist\n#VIDEO:v=BBBBBBBBBBB\n", encoding="utf-8")
+    assert batch.find_ytid(track.path, meta) == "BBBBBBBBBBB"
+    # ... or by artist/title
+    (tmp_path / "Artist - Title.txt").unlink()
+    (tmp_path / "Third - Tune.txt").write_text(
+        "#TITLE:Title\n#ARTIST:Artist\n#VIDEO:v=CCCCCCCCCCC\n", encoding="utf-8")
+    assert batch.find_ytid(track.path, meta) == "CCCCCCCCCCC"
+    # a mismatching artist/title candidate alone in an ambiguous folder stays ignored
+    assert batch.find_ytid(track.path, {"ARTIST": "Artist", "TITLE": "Other"}) is None
+
+
 # ------------------------------------------------------------------ studio importer
 def test_import_youtube_writes_ytid_sidecar(tmp_path, monkeypatch):
     from ultraai.studio import importer
@@ -328,11 +357,11 @@ def test_import_youtube_writes_ytid_sidecar(tmp_path, monkeypatch):
     lib = Library(tmp_path / "lib")
     url = "https://www.youtube.com/watch?v=UbstNV2FUNY&list=x"
     monkeypatch.setattr(importer, "youtube_info",
-                        lambda u: {"id": "UbstNV2FUNY", "artist": "Artist", "track": "Title",
-                                   "uploader": "chan"})
+                        lambda u, cookies=None: {"id": "UbstNV2FUNY", "artist": "Artist", "track": "Title",
+                                                 "uploader": "chan"})
     fake = tmp_path / "dl.m4a"
     fake.write_bytes(b"\x00")
-    monkeypatch.setattr(importer, "_download", lambda url, fmt, dest, hook=None: fake)
+    monkeypatch.setattr(importer, "_download", lambda url, fmt, dest, hook=None, cookies=None: fake)
     monkeypatch.setattr(importer, "remux_audio", lambda p: p)
 
     class Settings:
@@ -346,3 +375,20 @@ def test_import_youtube_writes_ytid_sidecar(tmp_path, monkeypatch):
     assert side.exists() and side.read_text(encoding="utf-8").strip() == "UbstNV2FUNY"
     # the sidecar is what find_ytid picks up for this audio
     assert batch.find_ytid(folder / st.audio, {}) == "UbstNV2FUNY"
+
+
+def test_find_ytid_usdb_and_videourl(tmp_path, monkeypatch):
+    import json as _json
+
+    from ultraai import batch
+    from ultraai import config as _c
+    monkeypatch.setattr(_c, "get_bool", lambda k, d=False: True if k == "yt_subs" else d)
+    audio = tmp_path / "Song.mp3"
+    audio.write_bytes(b"x")
+    (tmp_path / "Song.txt").write_text("#TITLE:Song\n#VIDEOURL:https://www.youtube.com/watch?v=ABCDEFGH123\n", encoding="utf-8")
+    assert batch.find_ytid(audio, {}) == "ABCDEFGH123"
+    (tmp_path / "Song.txt").write_text("#TITLE:Song\n", encoding="utf-8")
+    (tmp_path / "x.usdb").write_text(_json.dumps({"meta_tags": "v=12345678901,co=http://x"}), encoding="utf-8")
+    assert batch.find_ytid(audio, {}) == "12345678901"
+    (tmp_path / "x.usdb").unlink()
+    assert batch.find_ytid(audio, {}) is None
