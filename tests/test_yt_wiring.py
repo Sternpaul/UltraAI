@@ -81,6 +81,7 @@ def test_find_lyrics_prefers_sidecar_over_yt_and_lrclib(tmp_path, monkeypatch):
 
 
 def test_find_lyrics_yt_subs_when_ytid_sidecar_exists(tmp_path, monkeypatch):
+    monkeypatch.setenv("ULTRAAI_YT_ANCHOR", "1")  # anchoring is opt-in
     track = _track(tmp_path)
     (tmp_path / "Artist - Title.ytid").write_text(YTID + "\n")
     calls = _patch_subs(monkeypatch)
@@ -118,6 +119,7 @@ def test_find_lyrics_yt_anchor_off_gives_plain_lines_no_times(tmp_path, monkeypa
 
 # ------------------------------------------------------------------ (b) anchors passed on
 def test_convert_passes_sub_line_times_to_generate_sung(tmp_path, monkeypatch):
+    monkeypatch.setenv("ULTRAAI_YT_ANCHOR", "1")  # anchoring is opt-in
     track = _track(tmp_path)
     (tmp_path / "Artist - Title.ytid").write_text(YTID + "\n")
     _patch_subs(monkeypatch)

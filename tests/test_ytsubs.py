@@ -134,7 +134,7 @@ def test_word_agreement_identical_disjoint_half():
 def test_config_defaults(monkeypatch):
     for key, env, default in [("yt_subs", "ULTRAAI_YT_SUBS", "1"),
                               ("yt_subs_search", "ULTRAAI_YT_SUBS_SEARCH", "0"),
-                              ("yt_anchor", "ULTRAAI_YT_ANCHOR", "1")]:
+                              ("yt_anchor", "ULTRAAI_YT_ANCHOR", "0")]:
         monkeypatch.delenv(env, raising=False)
         assert config.get(key) == default
         assert config.env_of(key) == env

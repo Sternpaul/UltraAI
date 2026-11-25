@@ -79,7 +79,7 @@ OPTS: list[Opt] = [
     Opt("videogap", "ULTRAAI_VIDEOGAP", "1", "write #VIDEOGAP (seconds, 2 decimals) from onset cross-correlation when a sibling video file exists (video.py)"),
     Opt("yt_subs", "ULTRAAI_YT_SUBS", "1", "use YouTube auto/manual subtitles as the lyrics source when a video id is known"),
     Opt("yt_subs_search", "ULTRAAI_YT_SUBS_SEARCH", "0", "resolve the video id by searching 'ARTIST - TITLE' when unknown (slow)"),
-    Opt("yt_anchor", "ULTRAAI_YT_ANCHOR", "1", "use subtitle word times as LRC-style line anchors in the anchored alignment"),
+    Opt("yt_anchor", "ULTRAAI_YT_ANCHOR", "0", "use subtitle word times as LRC-style line anchors in the anchored alignment (opt-in: the benchmark showed they regress timing)"),
     Opt("asr_prior", "ULTRAAI_ASR_PRIOR", "1.0", "Gaussian time-prior bonus (log-prob units) for aligned words near their Whisper-heard time; 0 disables"),
     Opt("asr_prior_sigma", "ULTRAAI_ASR_PRIOR_SIGMA", "0.3", "std-dev (s) of the Gaussian Whisper time prior in the anchored Viterbi"),
     Opt("background_units", "ULTRAAI_BACKGROUND_UNITS",
