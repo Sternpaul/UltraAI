@@ -287,18 +287,29 @@ def youtube_id(url: str) -> str | None:
     return m.group(1) if m else None
 
 
+def youtube_cover_url(yt: str) -> str:
+    """The cover of the YouTube video itself — the thumbnail USDB Syncer can download."""
+    return f"https://img.youtube.com/vi/{yt}/hqdefault.jpg"
+
+
 def usdb_text(txt_text: str, source: str) -> str:
-    """The song as USDB expects it: #VIDEO carries the meta tags (v=<YouTube id>) that
-    USDB Syncer uses to fetch audio and video; local-only lines are left out."""
+    """The song as USDB expects it. USDB hosts only the txt, so every media file must be a
+    link: #VIDEO carries the meta tag (v=<YouTube id>) USDB Syncer uses to fetch audio and
+    video, and #COVERURL links the cover — the thumbnail of that same video, unless the txt
+    already links one. Local-only file names are left out."""
     from ..ultrastar.reader import parse
     from ..ultrastar.writer import dumps
 
     song = parse(txt_text)
     yt = youtube_id(source) or youtube_id(song.get("VIDEOURL") or "") or youtube_id(song.get("AUDIOURL") or "")
-    for k in ("VIDEO", "VIDEOGAP", "AUDIOURL", "VIDEOURL", "COVERURL", "BACKGROUNDURL"):
+    for k in ("VIDEO", "VIDEOGAP", "AUDIOURL", "VIDEOURL", "BACKGROUNDURL"):
         song.set(k, None)
     if yt:
         song.set("VIDEO", f"v={yt}")
+    if not song.get("COVERURL") and yt:
+        song.set("COVERURL", youtube_cover_url(yt))
+    if song.get("COVERURL"):
+        song.set("COVER", None)  # a local file name is meaningless on USDB
     return dumps(song)
 
 

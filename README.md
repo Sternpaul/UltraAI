@@ -81,7 +81,7 @@ The library is a normal USDX song folder (`Artist - Title/Artist - Title.txt`, `
 * Double-click a note to change its syllable (`Tab` = next note); `Enter` edits the whole line
   (`|` separates syllables: `Re|lease my bo|dy`).
 * *★ Golden notes…* re-places golden notes (hard jumps, big held notes, highest notes, mix).
-* *USDB* shows the txt ready for usdb.animux.de (`#VIDEO:v=<YouTube id>` for USDB Syncer).
+* *USDB* shows the txt ready for usdb.animux.de: `#VIDEO:v=<YouTube id>` and `#COVERURL:` (the video's thumbnail) are the links USDB Syncer fetches audio, video and cover from.
 * `T` (tap mode): the line plays, hold any letter key for each syllable – fastest way to
   re-time a line. `P` sets selected notes to the sung pitch.
 * `Space` play, `L` loop, `V` vocals only, `[` `]` speed, `Ctrl+Z` undo, `?` all shortcuts.

@@ -143,7 +143,7 @@ export async function openEditor(root, id, crumbs) {
     h("div", { class: "group" }, goldenSel, goldenShare),
     h("div", { class: "group" }, undoBtn, redoBtn, voiceSel),
     h("span", { class: "spacer" }),
-    h("div", { class: "group" }, saveEl, btn("USDB", "The txt ready for uploading to USDB (with the YouTube link)", () => usdbDialog()),
+    h("div", { class: "group" }, saveEl, btn("USDB", "The txt ready for uploading to USDB (with the YouTube and cover links)", () => usdbDialog()),
       reviewedBtn, btn("?", "Shortcuts (?)", () => help())));
 
   const pvCanvas = h("canvas", { "aria-label": "Game preview" });
@@ -817,7 +817,7 @@ export async function openEditor(root, id, crumbs) {
       const a = h("a", { href: URL.createObjectURL(new Blob([ta.value], { type: "text/plain" })), download: `${info.artist} - ${info.title}.txt` });
       document.body.append(a); a.click(); a.remove();
     };
-    if (!/#VIDEO:v=/.test(ta.value)) toast("No YouTube link for this song – add it from a link to include one");
+    if (!/#VIDEO:v=/.test(ta.value)) toast("No YouTube link for this song – add it from a link to include the video and cover links");
     dlg.showModal();
   }
   function help() {

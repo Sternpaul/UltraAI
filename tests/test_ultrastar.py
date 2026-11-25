@@ -100,3 +100,25 @@ def test_metrics_identity_and_shift():
         n.pitch += 12
     m = compare(s, transposed)
     assert m["pitch_class_acc"] == 1 and m["octave_offset"] == 1
+
+
+def test_usdb_text_cover_link():
+    from ultraai.studio.store import usdb_text, youtube_cover_url
+
+    assert youtube_cover_url("UbstNV2FUNY") == "https://img.youtube.com/vi/UbstNV2FUNY/hqdefault.jpg"
+    url = "https://www.youtube.com/watch?v=UbstNV2FUNY"
+    txt = SAMPLE.replace("#MP3:a.mp3", "#MP3:a.mp3\n#COVER:A - B [CO].jpg\n#AUDIOURL:https://www.youtube.com/watch?v=UbstNV2FUNY")
+
+    # YouTube-sourced song: the cover is linked (the video's thumbnail), the local file name is dropped
+    u = usdb_text(txt, url)
+    assert "#VIDEO:v=UbstNV2FUNY" in u
+    assert "#COVERURL:https://img.youtube.com/vi/UbstNV2FUNY/hqdefault.jpg" in u
+    assert "#COVER:" not in u and "#AUDIOURL" not in u and "#MP3:a.mp3" in u
+
+    # an already-linked cover wins over the derived thumbnail
+    u = usdb_text(txt.replace("#AUDIOURL:", "#COVERURL:https://example.invalid/c.jpg\n#AUDIOURL:"), url)
+    assert "#COVERURL:https://example.invalid/c.jpg" in u and "img.youtube.com" not in u and "#COVER:" not in u
+
+    # no YouTube link and no cover link: the local cover stays, nothing is linked
+    u = usdb_text(SAMPLE.replace("#MP3:a.mp3", "#MP3:a.mp3\n#COVER:A - B [CO].jpg"), "some local file.mp3")
+    assert "#COVERURL" not in u and "#COVER:A - B [CO].jpg" in u and "#VIDEO:" not in u

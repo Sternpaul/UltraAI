@@ -50,6 +50,10 @@ Rules:
 - Header keys are case-insensitive. Unknown keys are ignored; app-specific keys use the form `#APP-KEY`.
 - Encoding is UTF-8 without BOM; never write `#ENCODING`.
 - Paths are relative.
+- For USDB (usdb.animux.de hosts only the txt, no files): media must be **links**, not file names —
+  `#VIDEO:v=<YouTube id>` for audio/video (USDB Syncer meta tag) and `#COVERURL:`/`#BACKGROUNDURL:`
+  for images. For a YouTube-sourced song we link the video's own thumbnail as cover:
+  `https://img.youtube.com/vi/<id>/hqdefault.jpg` (always available; the syncer crops/resizes it).
 - Deprecated, don't emit: `#RELATIVE`, `#ENCODING`, `#DUETSINGERP*`, `#AUTHOR`, `#RESOLUTION`, `#NOTESGAP`, `#PREVIEW`.
 
 ## 4. Body

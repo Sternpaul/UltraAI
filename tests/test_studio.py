@@ -193,3 +193,4 @@ def test_rename_and_usdb(tmp_path):
     assert youtube_id("https://youtu.be/UbstNV2FUNY?t=3") == "UbstNV2FUNY"
     u = usdb_text((new / "Kingfishr - The Blade.txt").read_text(encoding="utf-8"), url)
     assert "#VIDEO:v=UbstNV2FUNY" in u and "#VIDEOURL" not in u
+    assert "#COVERURL:https://img.youtube.com/vi/UbstNV2FUNY/hqdefault.jpg" in u
