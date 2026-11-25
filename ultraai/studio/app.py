@@ -434,14 +434,18 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     def put_settings(body: dict):
         if "cookies" in body:  # a path, not the file: validate existence, tighten permissions
             path = str(body["cookies"] or "").strip()
-            if path and not Path(path).is_file():
-                raise HTTPException(400, "cookies path must name an existing file")
-            body["cookies"] = path
             if path:
+                # The user points at their own cookies.txt in the settings dialog of this
+                # localhost-bound, token-guarded app; validating on the *resolved* path
+                # keeps the stored form canonical and rejects anything weird.
+                path = str(Path(path).expanduser().resolve())
+                if not Path(path).is_file():  # codeql[py/path-injection] - user's own settings field
+                    raise HTTPException(400, "cookies path must name an existing file")
                 try:
-                    os.chmod(path, 0o600)  # best-effort: the cookies file is a secret
+                    os.chmod(path, 0o600)  # codeql[py/path-injection] - best-effort: the file is a secret
                 except OSError:
                     pass
+            body["cookies"] = path
         for k, v in body.items():
             if k in Settings.__dataclass_fields__ and k != "extra":
                 cur = getattr(settings, k)
@@ -486,11 +490,12 @@ def make_processor(settings: Settings, lib: Library):
 
     sep = settings.extra.get("separation") or settings.separation
     if settings.processor == "local":
-        return LocalProcessor(lib, separation=sep)
+        return LocalProcessor(lib, separation=sep, cookies=getattr(settings, "cookies", ""))
     if not settings.ssh_host:
         raise RuntimeError("no server configured (Settings: SSH host)")
     return SshProcessor(lib, SshTransport(settings.ssh_host, settings.ssh_port or None),
-                        settings.remote_dir, settings.remote_ultraai, separation=sep)
+                        settings.remote_dir, settings.remote_ultraai, separation=sep,
+                        cookies=getattr(settings, "cookies", ""))
 
 
 def _port_in_use(port: int) -> bool:

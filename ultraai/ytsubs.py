@@ -68,7 +68,7 @@ def _run(cmd: list[str]) -> str:
 _sleep = time.sleep  # injectable for tests
 
 _MAX_ATTEMPTS = 3
-_BACKOFF_S = (5.0, 20.0, 60.0)  # exponential backoff between 429 retries (+ jitter)
+_BACKOFF_S = (5.0, 20.0)  # backoff between 429 retries (+ jitter), one entry per sleep
 
 
 def _ytdlp_extra() -> list[str]:
@@ -81,12 +81,17 @@ def _ytdlp_extra() -> list[str]:
     return []
 
 
+_429_RE = re.compile(r"http error 429|http 429|too many requests|rate[- ]?limit", re.I)
+
+
 def _looks_429(text: str) -> bool:
-    return "429" in (text or "")
+    """Actual rate-limit signatures, not any '429' substring: a video id printed by
+    --print id can contain '429' without anything being rate-limited."""
+    return bool(_429_RE.search(text or ""))
 
 
 def _run_ytdlp(cmd: list[str]) -> str | None:
-    """``_run`` with 429 resilience: up to 3 attempts, backoff 5s/20s/60s + jitter.
+    """``_run`` with 429 resilience: up to 3 attempts, backoff 5s/20s + jitter.
 
     A 429 in the output or in the failure message is retried; after the last attempt a
     warning points at ULTRAAI_COOKIES and None is returned.  Any other failure

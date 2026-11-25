@@ -158,6 +158,10 @@ def test_generate_sung_uses_line_times_as_anchors(tmp_path, monkeypatch):
         pitch = None
 
     monkeypatch.setattr(generate, "analyse", lambda *a, **k: FakeAnalysis())
+    # no ffprobe on a plain CI runner: the plain-candidate branch asks for the duration
+    from ultraai import lrc
+
+    monkeypatch.setattr(lrc, "audio_duration", lambda p: 30.0)  # same as the wave fallback
     asr = [AsrSegment(t, t + 1.0, ln, [AsrWord(t, t + 0.5, w, 0.9) for w in ln.split()])
            for t, ln in zip(SUB_TIMES, SUB_LINES)]
     monkeypatch.setattr("ultraai.transcribe.transcribe", lambda *a, **k: asr)
@@ -323,11 +327,11 @@ def test_import_youtube_writes_ytid_sidecar(tmp_path, monkeypatch):
     lib = Library(tmp_path / "lib")
     url = "https://www.youtube.com/watch?v=UbstNV2FUNY&list=x"
     monkeypatch.setattr(importer, "youtube_info",
-                        lambda u: {"id": "UbstNV2FUNY", "artist": "Artist", "track": "Title",
-                                   "uploader": "chan"})
+                        lambda u, cookies=None: {"id": "UbstNV2FUNY", "artist": "Artist", "track": "Title",
+                                                 "uploader": "chan"})
     fake = tmp_path / "dl.m4a"
     fake.write_bytes(b"\x00")
-    monkeypatch.setattr(importer, "_download", lambda url, fmt, dest, hook=None: fake)
+    monkeypatch.setattr(importer, "_download", lambda url, fmt, dest, hook=None, cookies=None: fake)
     monkeypatch.setattr(importer, "remux_audio", lambda p: p)
 
     class Settings:
