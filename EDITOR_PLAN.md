@@ -46,7 +46,8 @@ Layout, top to bottom:
    note bars on top (syllable text inside), line breaks as vertical markers, playhead.
    Zoom/scroll with wheel/pinch; follows playback.
 3. **Lyrics strip**: the line text, editable inline; syllable boundaries shown as `|`.
-4. **Issues panel** (side): every uncertain spot, worst first; click = jump there, loop it.
+4. **Issues panel** (side): every uncertain spot, in song order (earliest first) so you can work
+   through the song top to bottom; risk shown as a colored dot. Click = jump there, loop it.
    "OK" dismisses; the song is done when the list is empty.
 
 Editing (mouse first, keyboard for speed):
