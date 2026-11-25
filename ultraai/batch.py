@@ -301,12 +301,15 @@ def yt_sidecar_fields(audio_path, metadata, asr_words=None) -> dict:
 
 
 def find_lyrics(track: Track) -> tuple[list[LrcResult], str, list[float] | None]:
-    """Sidecar .lrc/.txt > YouTube subs (needs a video id) > LRCLIB > embedded tags.
+    """Sidecar .lrc/.txt > LRCLIB > embedded tags > YouTube subs (LAST resort).
 
-    Returns (candidate lyric versions, source, line times).  ``line times`` is set
-    only when the lyrics came from YouTube subtitles and ``yt_anchor`` is on: the sub
-    line start seconds, to be passed as anchors to the anchored alignment.  With
-    several candidates the transcript decides which one fits (see ``generate_sung``).
+    YouTube captions rarely match the sung/hand-made lyrics (measured: word_recall
+    −60.8 when used as the lyric text, see BENCHMARK.md), so they are only consulted
+    when nothing else has lyrics.  Returns (candidate lyric versions, source, line
+    times).  ``line times`` is set only when the lyrics came from YouTube subtitles
+    and ``yt_anchor`` is on: the sub line start seconds, to be passed as anchors to
+    the anchored alignment.  With several candidates the transcript decides which
+    one fits (see ``generate_sung``).
     """
     for ext in (".lrc", ".txt"):
         side = track.path.with_suffix(ext)
@@ -315,14 +318,10 @@ def find_lyrics(track: Track) -> tuple[list[LrcResult], str, list[float] | None]
             lines = parse_lrc(text)
             plain = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
             return [LrcResult(track.artist, track.title, 0.0, lines, plain)], f"sidecar{ext}", None
-    yt = yt_sub_lyrics(track.path, {"ARTIST": track.artist, "TITLE": track.title})
-    if yt is not None:
-        cands, times = yt
-        return cands, "yt", times
     for artist, title in name_candidates(track):
         try:
             res = fetch_candidates(artist, title, track.path)
-        except Exception as exc:  # network trouble: fall through to tags
+        except Exception as exc:  # network trouble: fall through to tags/subs
             print(f"   LRCLIB error: {exc}")
             continue
         if res:
@@ -333,6 +332,10 @@ def find_lyrics(track: Track) -> tuple[list[LrcResult], str, list[float] | None]
         lines = parse_lrc(track.tag_lyrics)
         plain = [ln.strip() for ln in track.tag_lyrics.splitlines() if ln.strip()]
         return [LrcResult(track.artist, track.title, 0.0, lines, plain)], "tags", None
+    yt = yt_sub_lyrics(track.path, {"ARTIST": track.artist, "TITLE": track.title})
+    if yt is not None:
+        cands, times = yt
+        return cands, "yt", times
     return [], "none", None
 
 

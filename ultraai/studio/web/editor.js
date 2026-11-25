@@ -169,7 +169,7 @@ export async function openEditor(root, id, crumbs) {
   const issueList = h("div", { class: "panel", role: "tabpanel" });
   const lineList = h("div", { class: "panel", role: "tabpanel", hidden: true });
   const li = data.lyrics_info || {};
-  const lyrInfo = h("div", { class: "lyrinfo", title: li.structure_text || "" },
+  const lyrInfo = h("div", { class: "lyrinfo" + (li.source === "yt" ? " warn" : ""), title: li.structure_text || "" },
     lyricsLabel(li, data.lyrics_source) || "lyrics: unknown",
     li.structure_text ? h("div", { class: "muted" }, li.structure_text) : null);
   const side = h("aside", { class: "side" }, lyrInfo, h("div", { class: "tabs", role: "tablist" }, issueTab, lineTab, repTab), issueHead, issueList, lineList, repList, hint);

@@ -47,10 +47,13 @@ export function h(tag, props = {}, ...children) {
   return el;
 }
 
-/** "LRCLIB · Kingfishr – The Blade · synced · version 1 of 3" */
+/** "LRCLIB · Kingfishr – The Blade · synced · version 1 of 3"
+ *  YouTube-caption sources get an explicit warning: measured unreliable as lyric
+ *  text (word_recall −60.8 vs hand-made references), so the user should review. */
 export function lyricsLabel(li, fallback = "") {
   if (!li || !li.source) return fallback ? `lyrics: ${fallback}` : "";
   if (li.source === "user") return "lyrics: yours";
+  if (li.source === "yt") return "lyrics: YouTube captions ⚠ last resort — often inaccurate, please review";
   const parts = [`lyrics: ${li.source}`];
   if (li.artist || li.title) parts.push(`${li.artist} – ${li.title}`);
   parts.push(li.synced ? "synced" : "not synced");

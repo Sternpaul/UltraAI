@@ -80,20 +80,41 @@ def test_find_lyrics_prefers_sidecar_over_yt_and_lrclib(tmp_path, monkeypatch):
     assert calls["sub_lines"] == 0  # subs not consulted when a sidecar exists
 
 
-def test_find_lyrics_yt_subs_when_ytid_sidecar_exists(tmp_path, monkeypatch):
+def test_find_lyrics_yt_subs_last_resort_when_lrclib_misses(tmp_path, monkeypatch):
+    # YouTube subs are the LAST resort: only when sidecar, LRCLIB and tags all miss
     monkeypatch.setenv("ULTRAAI_YT_ANCHOR", "1")  # anchor default is 0; this test exercises the on path
     track = _track(tmp_path)
     (tmp_path / "Artist - Title.ytid").write_text(YTID + "\n")
     calls = _patch_subs(monkeypatch)
-    monkeypatch.setattr(batch, "fetch_candidates",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("LRCLIB must not be called")))
+    monkeypatch.setattr(batch, "fetch_candidates", lambda *a, **k: [])  # LRCLIB miss
     cands, source, times = batch.find_lyrics(track)
     assert source == "yt"
     assert times == SUB_TIMES
     assert calls["sub_lines"] == 1
     assert len(cands) == 1 and cands[0].synced
     assert cands[0].texts == SUB_LINES
-    assert [ln.time for ln in cands[0].lines] == SUB_TIMES
+
+
+def test_find_lyrics_prefers_lrclib_over_yt(tmp_path, monkeypatch):
+    track = _track(tmp_path)
+    (tmp_path / "Artist - Title.ytid").write_text(YTID + "\n")
+    calls = _patch_subs(monkeypatch)
+    _lrclib(monkeypatch)
+    cands, source, times = batch.find_lyrics(track)
+    assert source.startswith("lrclib") and times is None
+    assert calls["sub_lines"] == 0  # subs never consulted when LRCLIB hits
+
+
+def test_find_lyrics_prefers_tags_over_yt(tmp_path, monkeypatch):
+    track = _track(tmp_path)
+    track.tag_lyrics = "tag line one\ntag line two\n"
+    (tmp_path / "Artist - Title.ytid").write_text(YTID + "\n")
+    calls = _patch_subs(monkeypatch)
+    monkeypatch.setattr(batch, "fetch_candidates", lambda *a, **k: [])  # LRCLIB miss
+    cands, source, times = batch.find_lyrics(track)
+    assert source == "tags" and times is None
+    assert calls["sub_lines"] == 0
+    assert cands[0].texts == ["tag line one", "tag line two"]
 
 
 def test_find_lyrics_falls_back_to_lrclib_without_ytid(tmp_path, monkeypatch):
@@ -111,6 +132,7 @@ def test_find_lyrics_yt_anchor_off_gives_plain_lines_no_times(tmp_path, monkeypa
     track = _track(tmp_path)
     (tmp_path / "Artist - Title.ytid").write_text(YTID + "\n")
     _patch_subs(monkeypatch)
+    monkeypatch.setattr(batch, "fetch_candidates", lambda *a, **k: [])  # LRCLIB miss -> yt last resort
     cands, source, times = batch.find_lyrics(track)
     assert source == "yt"
     assert times is None
@@ -123,6 +145,7 @@ def test_convert_passes_sub_line_times_to_generate_sung(tmp_path, monkeypatch):
     track = _track(tmp_path)
     (tmp_path / "Artist - Title.ytid").write_text(YTID + "\n")
     _patch_subs(monkeypatch)
+    monkeypatch.setattr(batch, "fetch_candidates", lambda *a, **k: [])  # LRCLIB miss -> yt last resort
     captured = {}
 
     def fake_generate_sung(audio, cands, language, meta, separation=None, line_times=None):
