@@ -46,9 +46,12 @@ export async function openEditor(root, id, crumbs) {
   // ---------------------------------------------------------------- state
   const doc = data.doc;
   let baseVersion = data.doc_version ?? 0;  // optimistic concurrency: PUT /doc sends this back
+  // Issues are listed in song order (by start time), so you can work through them top to bottom;
+  // risk is only a tiebreaker for issues at the same timestamp.
+  const byTime = (a, b) => a.start - b.start || b.risk - a.risk;
   const ed = {
     voice: 0, lines: doc.voices[0].lines, selection: new Set(), editor: editorData,
-    issues: data.issues.map(i => ({ ...i })).sort((a, b) => b.risk - a.risk), extraNotes: new Set(), missingMarks: [],
+    issues: data.issues.map(i => ({ ...i })).sort(byTime), extraNotes: new Set(), missingMarks: [],
     currentIssue: null, loop: null, band: null, hoverBreak: null, duration: 0, curveOffset: 0,
     pitchSpan: { lo: 0, hi: 12 },
   };
@@ -60,7 +63,7 @@ export async function openEditor(root, id, crumbs) {
     const cur = ed.currentIssue?.key;
     const live = [...(lyricText ? lyricIssues(ed.lines, lyricText) : []), ...pitchIssues(ed.lines, ed.editor, ed.curveOffset)];
     const li = live.map(i => ({ ...i, dismissed: dismissedKeys.has(i.key) }));
-    ed.issues = [...serverIssues, ...li].sort((a, b) => b.risk - a.risk);
+    ed.issues = [...serverIssues, ...li].sort(byTime);
     ed.extraNotes = new Set(li.filter(i => i.kind === "lyrics_extra" && !i.dismissed).flatMap(i => i.notes));
     ed.missingMarks = li.filter(i => i.kind === "lyrics_missing" && !i.dismissed);
     ed.currentIssue = cur ? ed.issues.find(i => i.key === cur) ?? null : null;
@@ -523,7 +526,7 @@ export async function openEditor(root, id, crumbs) {
     renderIssues(); render();
   }
   function stepIssue(dir) {
-    const open = ed.issues.filter(i => !i.dismissed).sort((a, b) => a.start - b.start);
+    const open = ed.issues.filter(i => !i.dismissed).sort(byTime);
     if (!open.length) return toast("No open issues");
     const cur = ed.currentIssue;
     let k = cur ? open.findIndex(i => i === cur) : -1;
