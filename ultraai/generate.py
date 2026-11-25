@@ -649,10 +649,14 @@ def generate_sung(audio: Path, candidates: list, language: str, meta: dict[str, 
         else:
             asr = transcribe(a.vocals.with_name(a.vocals.stem + ".mono16000.wav"), language, wave=a.wave)
     scored = []
+    anchors_dropped = False
     for k, cand in enumerate(candidates):
         texts, times = lrc_lines(cand)
-        if line_times is not None and k == 0 and len(line_times) == len(texts):
-            times = list(line_times)
+        if line_times is not None and k == 0:
+            if len(line_times) == len(texts):
+                times = list(line_times)
+            else:  # subtitles and lyrics disagree on the line count: no anchors
+                anchors_dropped = True
         if texts:
             scored.append((match(texts, asr), k, texts, times))
     if not scored:
@@ -671,6 +675,8 @@ def generate_sung(audio: Path, candidates: list, language: str, meta: dict[str, 
             st = match(texts, asr, line_times=times, offset=off)
     info: dict = {"candidate": k, "candidates": len(scored), "asr_words": st.asr_words,
                   "asr_coverage": round(st.coverage, 3), "jumps": st.jumps, "structure": "lrc"}
+    if anchors_dropped:  # external line times discarded: report that they never applied
+        info["yt_anchors_dropped"] = True
     min_cov = config.get_float("m3_min_coverage")
     heard = sum(ln.matched for ln in st.lines) / max(1, sum(ln.words for ln in st.lines))
     info["heard"] = round(heard, 3)
