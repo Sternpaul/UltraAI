@@ -79,7 +79,7 @@ OPTS: list[Opt] = [
     Opt("videogap", "ULTRAAI_VIDEOGAP", "1", "write #VIDEOGAP (seconds, 2 decimals) from onset cross-correlation when a sibling video file exists (video.py)"),
     Opt("yt_subs", "ULTRAAI_YT_SUBS", "1", "use YouTube auto/manual subtitles as the lyrics source when a video id is known"),
     Opt("yt_subs_search", "ULTRAAI_YT_SUBS_SEARCH", "0", "resolve the video id by searching 'ARTIST - TITLE' when unknown (slow)"),
-    Opt("yt_anchor", "ULTRAAI_YT_ANCHOR", "1", "use subtitle word times as LRC-style line anchors in the anchored alignment"),
+    Opt("yt_anchor", "ULTRAAI_YT_ANCHOR", "0", "use subtitle word times as LRC-style line anchors in the anchored alignment; default 0 — on 5 English gate songs with exact video ids this regressed timing (-4.9 onset_within_250ms, -5.7 rel-100ms), caption-chunk starts are not musical line starts"),
     Opt("cookies", "ULTRAAI_COOKIES", "", "path to a Netscape cookies.txt passed to yt-dlp via --cookies (YouTube 429 rate limits); the file is a secret: never logged, never committed"),
     Opt("yt_impersonate", "ULTRAAI_YT_IMPERSONATE", "chrome", "yt-dlp --impersonate target (e.g. chrome) for YouTube requests; lifts most 429 rate limits on subtitle downloads. Requires curl_cffi. '' disables"),
     Opt("yt_sleep_subs", "ULTRAAI_YT_SLEEP_SUBS", "60", "yt-dlp --sleep-subtitles seconds; YouTube restricts auto-subtitles for sessions younger than ~60 s. 0 disables"),
