@@ -192,6 +192,19 @@ cookies file we still only got 7/25; PO-token support would be the robust fix):
 - To widen n beyond the 429 wall, PO-token support for yt-dlp is the follow-up
   (cookies alone still got rate-limited here).
 
+### Update: 429 wall lifted via `--impersonate` + `--sleep-subtitles` (PR-17, #20)
+
+The upstream workarounds work: `--impersonate chrome` (curl_cffi) plus
+`--sleep-subtitles 60` fetches subtitles reliably again (manual subs landed for 4 of
+the exact-ytid gate songs; a few videos genuinely have no captions). Note: per-language
+requests can still 429 individually — keep whatever subtitle files landed.
+
+With that, the exact-ytid times-only rerun reached **n=5 English gate songs**
+(exact USDB ytids, cached subs): timing **−4.9**, timing-rel **−5.7**, pitch −1.6,
+word_recall flat — clearly negative (one song anchored catastrophically). Final verdict:
+**`ULTRAAI_YT_ANCHOR` default is now 0** (changed in PR-17). YouTube subs remain
+(a) fallback lyrics when LRCLIB misses and (b) the `yt_agreement` review signal.
+
 ## Reproduce
 
 ```bash
