@@ -71,6 +71,8 @@ def main(root="library", out="out/library"):
             asr = transcribe(a.vocals.with_name(a.vocals.stem + ".mono16000.wav"), lang, wave=a.wave)
             row["asr_words"] = sum(len(s.words) for s in asr)
             row["t_asr"] = round(time.time() - t0) - row["t_analyse"]
+            from ultraai.batch import yt_sidecar_fields
+            row.update(yt_sidecar_fields(case.audio, case.metadata, [w for s in asr for w in s.words]))
             for gen in ("m2", "m3"):
                 buf = io.StringIO()
                 try:

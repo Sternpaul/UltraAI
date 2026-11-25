@@ -628,9 +628,14 @@ def generate_from_lrc(audio: Path, lrc, language: str, meta: dict[str, str],
 
 
 def generate_sung(audio: Path, candidates: list, language: str, meta: dict[str, str],
-                  separation: str = DEFAULT_SEPARATION) -> tuple[Song, dict]:
+                  separation: str = DEFAULT_SEPARATION,
+                  line_times: list[float] | None = None) -> tuple[Song, dict]:
     """M3: listen first.  Whisper transcript decides which lyric version fits and what is
-    actually sung (repeats, missing lines); lyrics give the spelling.  Falls back to M2."""
+    actually sung (repeats, missing lines); lyrics give the spelling.  Falls back to M2.
+
+    ``line_times``: rough line start seconds from an external timed source (YouTube
+    subtitles); when they match the first candidate's texts they are used as that
+    candidate's ``times``, i.e. as the anchors of the m3 anchored alignment."""
     from .lrc import audio_duration
     from .structure import fill_times, match
     from .transcribe import transcribe
@@ -646,6 +651,8 @@ def generate_sung(audio: Path, candidates: list, language: str, meta: dict[str, 
     scored = []
     for k, cand in enumerate(candidates):
         texts, times = lrc_lines(cand)
+        if line_times is not None and k == 0 and len(line_times) == len(texts):
+            times = list(line_times)
         if texts:
             scored.append((match(texts, asr), k, texts, times))
     if not scored:
@@ -943,6 +950,8 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
     free = words
     expected: list[float | None] | None = None
     info: dict = {"lrc_synced": times is not None, "anchored": False}
+    if asr_words:
+        info["asr_word_list"] = list(asr_words)  # for the yt_agreement sidecar metric
     if times is not None:
         offsets = aligner.lrc_offsets(lyrics, words, times)
         if offsets is None and trusted:

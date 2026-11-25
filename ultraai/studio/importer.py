@@ -8,7 +8,7 @@ from pathlib import Path
 
 import logging
 
-from .store import Library, SongState
+from .store import Library, SongState, youtube_id
 
 log = logging.getLogger("ultraai.import")
 
@@ -175,8 +175,12 @@ def import_youtube(lib: Library, url: str, progress=None, settings=None, options
         with tempfile.TemporaryDirectory() as tmp:
             got = _download(url, fmt, Path(tmp), _hook(progress, "audio"))
             got = remux_audio(got)
-            lib.add_audio(st.id, got, move=True)
-            log.info("downloaded %s - %s: %s", artist, title, got.suffix)
+            audio_name = lib.add_audio(st.id, got, move=True)
+            ytid = youtube_id(url) or str(info.get("id") or "")
+            if re.fullmatch(r"[A-Za-z0-9_-]{11}", ytid):  # <audio-stem>.ytid next to the audio
+                (lib.folder(st.id) / (Path(audio_name).stem + ".ytid")).write_text(
+                    ytid + "\n", encoding="utf-8")
+            log.info("downloaded %s - %s: %s (video id %s)", artist, title, got.suffix, ytid or "?")
         # the song can be processed while the video downloads
         lib.update(st.id, state="queued", stage="")
         if settings is not None:

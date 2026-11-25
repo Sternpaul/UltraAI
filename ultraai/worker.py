@@ -13,6 +13,10 @@ editor), editor.json (pitch curve, waveform peaks, Whisper words).  Progress in
 JOBDIR/status.json: {"state": queued|running|done|needs_lyrics|error, "stage", "error", ...}.
 Jobs run one at a time per machine (file lock); expensive steps are cached per audio file,
 so re-running a job with new lyrics takes seconds.
+
+Lyrics come from the job's "lyrics" (user-pasted) when present, else from YouTube
+subtitles when a video id is known for the audio (a .ytid sidecar, a #VIDEO:v= header,
+or a search when yt_subs_search is on), else LRCLIB.
 """
 
 from __future__ import annotations
@@ -335,13 +339,21 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
             pitch_track(v2, load_mono(v2, 16000), config.get("pitch"))
     else:
         pr.skip("checks", "not chosen")
-    # lyrics: user-supplied, else LRCLIB
+    # lyrics: user-supplied, else YouTube subs (when a video id is known), else LRCLIB
+    line_times: list[float] | None = None
     if spec.get("lyrics"):
         pr.skip("lyrics", "your lyrics")
         cands, source = lyrics_candidates(spec["lyrics"], artist, title), "user"
     else:
         pr.start("lyrics")
-        cands, source = fetch_candidates(artist, title, audio), "LRCLIB"
+        from .batch import yt_sub_lyrics
+        yt = yt_sub_lyrics(audio, {"ARTIST": artist, "TITLE": title,
+                                   "SOURCE": spec.get("source") or "", "YTID": spec.get("ytid") or ""})
+        if yt is not None:
+            cands, line_times = yt
+            source = "yt"
+        else:
+            cands, source = fetch_candidates(artist, title, audio), "LRCLIB"
     log.info("lyrics: %s, %d version(s)", source, len(cands))
     cands = [c for c in cands if c.texts]
     lang_name = spec.get("language") or ""
@@ -369,9 +381,10 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
         if spec.get(k.lower()):
             meta[k] = str(spec[k.lower()])
     try:
-        song, info = generate_sung(audio, cands, code or "xx", meta, separation=sep)
+        song, info = generate_sung(audio, cands, code or "xx", meta, separation=sep,
+                                   line_times=line_times)
     except LookupError:
-        song, info = generate_from_lines(audio, cands[0].texts, None, code or "xx", meta, sep)
+        song, info = generate_from_lines(audio, cands[0].texts, line_times, code or "xx", meta, sep)
     song.set("MP3", spec["audio"])
     song.set("AUDIO", spec["audio"])
     write(song, out / "song.txt")
@@ -380,6 +393,9 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
                                       "candidates", "anchored", "asr_coverage")}
     side.update(lyrics_source=source, language=lang_name, separation=sep)
     side["lyrics"] = lyrics_summary(cands, info, source)
+    from .batch import yt_sidecar_fields
+    side.update(yt_sidecar_fields(audio, {"ARTIST": artist, "TITLE": title},
+                                  [w for s in asr for w in s.words]))
     (out / "song.ultraai.json").write_text(json.dumps(side, ensure_ascii=False), encoding="utf-8")
     n_issues = sum(1 for i in info.get("issues", []))
     log.info("done in %.0f s: %d lines, %d issues, structure %s", time.time() - t0,

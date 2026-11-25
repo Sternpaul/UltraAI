@@ -2,7 +2,8 @@
 
 For every audio file:
   metadata  <- file tags (artist/title/year/genre/cover) or "Artist - Title" filename
-  lyrics    <- sidecar .lrc/.txt next to the audio, else LRCLIB, else embedded tag lyrics
+  lyrics    <- sidecar .lrc/.txt next to the audio, else YouTube subtitles (when a video
+               id is known), else LRCLIB, else embedded tag lyrics
   language  <- detected from the lyrics text (en / de / el incl. Greeklish)
   output    <- "<out>/<Artist> - <Title>/" with txt, audio, [CO].jpg, [VOC]/[INSTR] stems
 A report (report.csv) lists what happened and which songs deserve a manual check.
@@ -19,7 +20,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .lrc import LrcResult, fetch_candidates, parse_lrc
+from .lrc import LrcLine, LrcResult, fetch_candidates, parse_lrc
 from .lyrics import greeklish
 
 AUDIO_EXT = {".mp3", ".m4a", ".flac", ".wav", ".ogg", ".opus", ".aac", ".wma"}
@@ -174,11 +175,138 @@ def read_tags(path: Path) -> Track:
     return Track(path, clean_tag(artist), clean_tag(title), year, genre, cover, lyrics or "")
 
 
-def find_lyrics(track: Track) -> tuple[list[LrcResult], str]:
-    """Sidecar .lrc/.txt > LRCLIB (several versions) > embedded tag lyrics.
+# ------------------------------------------------------------------ YouTube id
+_YTID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
+_YT_URL_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/embed/|/live/)([A-Za-z0-9_-]{11})")
+_VIDEO_V_RE = re.compile(r"(?im)^#VIDEO:\s*v=([A-Za-z0-9_-]{11})")
 
-    Returns (candidate lyric versions, source).  With several candidates the transcript
-    decides which one fits the recording (see ``generate_sung``).
+
+def find_ytid(audio_path, metadata=None) -> str | None:
+    """The YouTube video id of a song, if known — never raises.
+
+    Sources, in order: a ``<audio-stem>.ytid`` sidecar file next to the audio, a
+    ``#VIDEO:v=<id>`` header in an existing USDX txt in the same folder, an explicit
+    ``YTID``/``SOURCE`` entry in ``metadata`` (job specs), and — only when
+    ``yt_subs_search`` is on — ``resolve_ytid("ARTIST - TITLE")`` (the result is
+    cached by writing the sidecar).  Returns None fast when ``yt_subs`` is off.
+    """
+    from . import config, ytsubs
+
+    if not config.get_bool("yt_subs"):
+        return None
+    audio_path = Path(audio_path)
+    meta = metadata or {}
+    try:
+        side = audio_path.with_suffix(".ytid")
+        if side.exists():
+            v = side.read_text(encoding="utf-8", errors="replace").strip()
+            if _YTID_RE.fullmatch(v):
+                return v
+    except OSError:
+        pass
+    try:
+        for txt in sorted(audio_path.parent.glob("*.txt")):
+            try:
+                head = txt.read_text(encoding="utf-8", errors="replace")[:8000]
+            except OSError:
+                continue
+            m = _VIDEO_V_RE.search(head)
+            if m:
+                return m.group(1)
+    except OSError:
+        pass
+    ytid = str(meta.get("YTID") or meta.get("ytid") or "").strip()
+    if _YTID_RE.fullmatch(ytid):
+        return ytid
+    m = _YT_URL_RE.search(str(meta.get("SOURCE") or meta.get("source") or ""))
+    if m:
+        return m.group(1)
+    if config.get_bool("yt_subs_search"):
+        artist = meta.get("ARTIST") or meta.get("artist") or ""
+        title = meta.get("TITLE") or meta.get("title") or ""
+        if artist and title:
+            ytid = ytsubs.resolve_ytid(f"{artist} - {title}") or ""
+            if _YTID_RE.fullmatch(ytid):
+                try:  # cache the search result next to the audio
+                    audio_path.with_suffix(".ytid").write_text(ytid + "\n", encoding="utf-8")
+                except OSError:
+                    pass
+                return ytid
+    return None
+
+
+def yt_sub_lyrics(audio_path, metadata) -> tuple[list[LrcResult], list[float] | None] | None:
+    """YouTube subtitles as a lyrics candidate: ``(candidates, line_times)``, or None.
+
+    None when ``yt_subs`` is off, no video id is known, or the video has no usable
+    subs.  With ``yt_anchor`` on, the candidate is synced (one LrcLine per sub line)
+    and the sub line start seconds are returned as ``line_times`` for the anchored
+    alignment; otherwise the lines are plain text and ``line_times`` is None.
+    """
+    from . import config, ytsubs
+
+    if not config.get_bool("yt_subs"):
+        return None
+    ytid = find_ytid(audio_path, metadata)
+    if not ytid:
+        return None
+    lines, times = ytsubs.sub_lines(ytid)
+    if not lines:
+        return None
+    artist = metadata.get("ARTIST") or metadata.get("artist") or ""
+    title = metadata.get("TITLE") or metadata.get("title") or ""
+    if config.get_bool("yt_anchor") and times and len(times) == len(lines):
+        synced = [LrcLine(t, ln) for ln, t in zip(lines, times)]
+        return [LrcResult(artist, title, 0.0, synced, list(lines))], list(times)
+    return [LrcResult(artist, title, 0.0, [], list(lines))], None
+
+
+def _yt_source(ytid: str) -> str:
+    """'manual' or 'auto' for the cached json3: manual tracks carry a tStartMs per
+    segment, auto (ASR) captions only a per-segment duration."""
+    from . import ytsubs
+
+    data = ytsubs.fetch_subs(ytid) or {}
+    segs = [s for ev in data.get("events") or [] if isinstance(ev, dict)
+            for s in ev.get("segs") or [] if isinstance(s, dict)]
+    if not segs:
+        return "auto"
+    timed = sum(1 for s in segs if s.get("tStartMs") is not None)
+    return "manual" if timed > len(segs) / 2 else "auto"
+
+
+def yt_sidecar_fields(audio_path, metadata, asr_words=None) -> dict:
+    """``{"ytid", "yt_source", "yt_agreement"}`` for the .ultraai.json sidecar when
+    YouTube subs are usable for this song, else ``{}``.  ``yt_agreement`` (Whisper vs
+    subs, multiset Jaccard) is included only when ``asr_words`` are available.
+    Never raises."""
+    try:
+        from . import config, ytsubs
+
+        if not config.get_bool("yt_subs"):
+            return {}
+        ytid = find_ytid(audio_path, metadata)
+        if not ytid:
+            return {}
+        segs = ytsubs.sub_segments(ytid)
+        if not segs:
+            return {}
+        out = {"ytid": ytid, "yt_source": _yt_source(ytid)}
+        if asr_words:
+            out["yt_agreement"] = round(
+                ytsubs.word_agreement(asr_words, [w for s in segs for w in s.words]), 4)
+        return out
+    except Exception:
+        return {}
+
+
+def find_lyrics(track: Track) -> tuple[list[LrcResult], str, list[float] | None]:
+    """Sidecar .lrc/.txt > YouTube subs (needs a video id) > LRCLIB > embedded tags.
+
+    Returns (candidate lyric versions, source, line times).  ``line times`` is set
+    only when the lyrics came from YouTube subtitles and ``yt_anchor`` is on: the sub
+    line start seconds, to be passed as anchors to the anchored alignment.  With
+    several candidates the transcript decides which one fits (see ``generate_sung``).
     """
     for ext in (".lrc", ".txt"):
         side = track.path.with_suffix(ext)
@@ -186,7 +314,11 @@ def find_lyrics(track: Track) -> tuple[list[LrcResult], str]:
             text = side.read_text(encoding="utf-8", errors="replace")
             lines = parse_lrc(text)
             plain = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
-            return [LrcResult(track.artist, track.title, 0.0, lines, plain)], f"sidecar{ext}"
+            return [LrcResult(track.artist, track.title, 0.0, lines, plain)], f"sidecar{ext}", None
+    yt = yt_sub_lyrics(track.path, {"ARTIST": track.artist, "TITLE": track.title})
+    if yt is not None:
+        cands, times = yt
+        return cands, "yt", times
     for artist, title in name_candidates(track):
         try:
             res = fetch_candidates(artist, title, track.path)
@@ -196,12 +328,12 @@ def find_lyrics(track: Track) -> tuple[list[LrcResult], str]:
         if res:
             if (artist, title) != (track.artist, track.title):
                 track.extra["lookup"] = f"{artist} - {title}"
-            return res, "lrclib" + (" (synced)" if res[0].synced else " (plain)")
+            return res, "lrclib" + (" (synced)" if res[0].synced else " (plain)"), None
     if track.tag_lyrics.strip():
         lines = parse_lrc(track.tag_lyrics)
         plain = [ln.strip() for ln in track.tag_lyrics.splitlines() if ln.strip()]
-        return [LrcResult(track.artist, track.title, 0.0, lines, plain)], "tags"
-    return [], "none"
+        return [LrcResult(track.artist, track.title, 0.0, lines, plain)], "tags", None
+    return [], "none", None
 
 
 def safe_name(text: str) -> str:
@@ -262,7 +394,7 @@ def convert(track: Track, out_root: Path, separation: str, lead: str | None, gre
     from .ultrastar.writer import write
 
     row = {"file": str(track.path), "artist": track.artist, "title": track.title}
-    cands, source = find_lyrics(track)
+    cands, source, line_times = find_lyrics(track)
     cands = [c for c in cands if c.texts]
     row["lyrics_source"] = source
     if not cands:
@@ -307,7 +439,8 @@ def convert(track: Track, out_root: Path, separation: str, lead: str | None, gre
         from . import config
         os.environ[config.env_of("lead")] = lead
     if method == "m3":
-        song, info = generate_sung(track.path, cands, code, meta, separation=separation)
+        song, info = generate_sung(track.path, cands, code, meta, separation=separation,
+                                   line_times=line_times)
         source += f", version {info['candidate'] + 1}/{info['candidates']}, structure {info['structure']}"
         row["lyrics_source"] = source
     else:
@@ -317,11 +450,13 @@ def convert(track: Track, out_root: Path, separation: str, lead: str | None, gre
     write(song, folder / f"{name}.txt")
     write_byproducts(song, folder / f"{name}.txt")
     import json
-    (folder / f"{name}.ultraai.json").write_text(json.dumps(
-        {"lyrics_source": source, "anchored": info.get("anchored"), "structure": info.get("structure"),
-         "lines": info.get("lines", []), "issues": info.get("issues", []),
-         "words": info.get("words", []), "risk_model": info.get("risk_model")},
-        indent=1, ensure_ascii=False), encoding="utf-8")
+    side = {"lyrics_source": source, "anchored": info.get("anchored"), "structure": info.get("structure"),
+            "lines": info.get("lines", []), "issues": info.get("issues", []),
+            "words": info.get("words", []), "risk_model": info.get("risk_model")}
+    side.update(yt_sidecar_fields(track.path, {"ARTIST": track.artist, "TITLE": track.title},
+                                  info.get("asr_word_list")))
+    (folder / f"{name}.ultraai.json").write_text(json.dumps(side, indent=1, ensure_ascii=False),
+                                                  encoding="utf-8")
     errors = [i for i in validate(song, folder) if i.level == "error"]
     row.update(status="error" if errors else "ok", folder=str(folder), anchored=info.get("anchored"),
                lines=len(song.lines()), low_confidence_lines=info.get("low_confidence_lines", ""),
