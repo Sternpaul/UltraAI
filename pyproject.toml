@@ -15,7 +15,7 @@ dependencies = [
 worker = [
   "numpy", "scipy", "soundfile", "librosa", "pyphen",
   "torch>=2.6,<2.16",          # torchaudio 2.8 still ships MMS_FA + forced_align
-  "torchaudio>=2.6,<2.9",
+  "torchaudio>=2.6,<2.12",
   "audio-separator[cpu]", "audioread",
   "swift-f0",
   "faster-whisper",           # what is actually sung (structure check)
