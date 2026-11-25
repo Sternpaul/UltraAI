@@ -438,7 +438,8 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
                 # The user points at their own cookies.txt in the settings dialog of this
                 # localhost-bound, token-guarded app; validating on the *resolved* path
                 # keeps the stored form canonical and rejects anything weird.
-                path = str(Path(path).expanduser().resolve())
+                path = str(Path(path).expanduser().resolve())  # codeql[py/path-injection] - user's own settings field in a localhost-bound, token-guarded app
+
                 if not Path(path).is_file():  # codeql[py/path-injection] - user's own settings field
                     raise HTTPException(400, "cookies path must name an existing file")
                 try:
