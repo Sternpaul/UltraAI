@@ -17,6 +17,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# keep pip itself patched: the CI in-image pip-audit flags vulnerable pips, and
+# the python:3.12-slim base image ships whatever pip was current at its build
+RUN pip install --no-cache-dir --upgrade "pip>=26.1.2"
+
 COPY pyproject.toml ./
 COPY ultraai ./ultraai
 # a C compiler only while installing: some worker deps (diffq) build from source
