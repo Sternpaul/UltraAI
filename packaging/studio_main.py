@@ -47,7 +47,8 @@ def self_test(out: Path) -> int:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
         sock.close()
-        app = create_app(Settings(library=str(Path(tmp) / "lib"), processor="ssh"), start_queue=False)
+        app = create_app(Settings(library=str(Path(tmp) / "lib"), processor="ssh"), start_queue=False,
+                         token="self-test", port=port)  # the Host check expects this port
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_config=None))
         threading.Thread(target=server.run, daemon=True).start()
         for _ in range(200):
