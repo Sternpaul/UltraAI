@@ -721,7 +721,23 @@ def generate_sung(audio: Path, candidates: list, language: str, meta: dict[str, 
                                      trusted=trusted and config.get_bool("m3_trust"),
                                      asr_words=asr_words, line_flags=flags)
     more.update(info)
+    _refresh_song_check(more)  # now with the transcript comparison ("heard")
     return song, more
+
+
+def _refresh_song_check(info: dict) -> None:
+    """Recompute the song-level check once all generation info is merged."""
+    from . import issues as iss
+
+    old = [i for i in info.get("issues", []) if i.get("kind") == "song_check"]
+    start = old[0]["start"] if old else min((i["start"] for i in info.get("issues", []) if i.get("start") is not None),
+                                           default=0.0)
+    info["issues"] = [i for i in info.get("issues", []) if i.get("kind") != "song_check"]
+    info.pop("song_warning", None)
+    check = iss.song_check(info, start)
+    if check:
+        info["issues"].insert(0, check)
+        info["song_warning"] = check["text"]
 
 
 LRC_AGREE_S = 2.5
@@ -1018,6 +1034,11 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
         _add_issues(info, syl, free, expected, asr_words, line_flags, lyrics, a.pitch)
         info["issues"] += double_check_issues(audio, separation, syl, a)
         info["issues"] = sorted(info["issues"] + _repeat_issues(proposals), key=lambda i: -i["risk"])
+        from . import issues as iss
+        check = iss.song_check(info, syl[0].start if syl else 0.0)
+        if check:
+            info["issues"].insert(0, check)
+            info["song_warning"] = check["text"]
 
         # B5b: final pitch fit (keysnap / octave range, both off by default) — after the
         # last pitch change (double-check auto-fix), before the song is built; timing untouched

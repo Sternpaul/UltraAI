@@ -137,7 +137,8 @@ class Processor:
         self.lib.apply_media_headers(sid)
         self.lib.update(sid, state="needs_review", stage="", error="", issues=n, dismissed=[],
                         lyrics_source=side.get("lyrics_source", ""), job={}, lyrics_info=side.get("lyrics") or {},
-                        language=st.language or side.get("language", ""), doc_version=st.doc_version + 1)
+                        language=st.language or side.get("language", ""), doc_version=st.doc_version + 1,
+                        warning=side.get("song_warning") or "")
         return "needs_review"
 
 

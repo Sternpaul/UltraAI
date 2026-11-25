@@ -34,7 +34,7 @@ OPTS: list[Opt] = [
     Opt("pitch", "ULTRAAI_PITCH", "swift", "pitch model: swift|rmvpe|fcpe|pesto|crepe-tiny|crepe-full|vote"),
     Opt("lead", "ULTRAAI_LEAD", "", "backing-vocal removal model applied to the vocal stem ('' = keep)"),
     Opt("notes", "ULTRAAI_NOTES", "singer", "note style: singer|easier|easiest"),
-    Opt("pitch_check", "ULTRAAI_PITCH_CHECK", "", "comma-separated extra pitch models used as double check"),
+    Opt("pitch_check", "ULTRAAI_PITCH_CHECK", "rmvpe", "comma-separated extra pitch models used as double check (warnings only); '' = none. rmvpe: 78% of its warnings hit real errors, ~8 new finds per song (BENCHMARK.md)"),
     Opt("pitch2", "ULTRAAI_PITCH2", "", "legacy alias of pitch_check"),
     Opt("sep_check", "ULTRAAI_SEP_CHECK", "", "comma-separated extra separation models used as double check"),
     Opt("sep2", "ULTRAAI_SEP2", "", "legacy alias of sep_check"),

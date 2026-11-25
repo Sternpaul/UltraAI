@@ -244,6 +244,8 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
                                          "lyrics_source", "video", "cover", "progress", "lyrics_info",
                                          "options")}
         d["open_issues"] = max(0, st.issues - len(st.dismissed))
+        # the song-level check stays visible in the list until its issue is marked OK
+        d["warning"] = "" if any(k.startswith("song_check:") for k in st.dismissed) else st.warning
         return d
 
     # ---- library / queue -----------------------------------------------------------

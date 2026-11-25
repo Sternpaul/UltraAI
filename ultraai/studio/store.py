@@ -68,6 +68,7 @@ class SongState:
     video: str = ""                     # file name of the music video (USDX #VIDEO), if any
     cover: str = ""                     # cover image (USDX #COVER), if any
     doc_version: int = 0                # bumped on every doc save and reprocess (optimistic locking)
+    warning: str = ""                   # song-level check from processing ("Lyrics may not match the singing")
 
     @classmethod
     def from_dict(cls, d: dict) -> "SongState":

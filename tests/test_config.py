@@ -12,7 +12,7 @@ def test_defaults():
     assert config.get_float("minseg") == 0.15
     assert config.get_int("maxseg") == 6
     assert config.get("lead") == ""
-    assert config.get_list("pitch_check") == []
+    assert config.get_list("pitch_check") == ["rmvpe"]  # warnings-only double check (BENCHMARK.md)
 
 
 def test_env_override_and_call_time_read(monkeypatch):

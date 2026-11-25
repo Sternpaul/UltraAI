@@ -21,7 +21,8 @@ from pathlib import Path
 SONGS = ["Charli XCX - Apple", "Creedence Clearwater Revival - Have You Ever Seen The Rain",
          "Wir sind Helden - Denkmal"]
 
-BASE = {"ULTRAAI_SEPARATION": "htdemucs", "ULTRAAI_PITCH": "swift", "ULTRAAI_ASR_SEP": "htdemucs"}
+BASE = {"ULTRAAI_SEPARATION": "htdemucs", "ULTRAAI_PITCH": "swift", "ULTRAAI_ASR_SEP": "htdemucs",
+        "ULTRAAI_PITCH_CHECK": ""}  # double checks only add warnings
 CONFIGS = [  # (name, kind, env overrides) - cheap ones first
     ("pitch:swift", "pitch", {}),
     ("pitch:fcpe", "pitch", {"ULTRAAI_PITCH": "fcpe"}),

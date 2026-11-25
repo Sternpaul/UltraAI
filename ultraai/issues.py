@@ -354,3 +354,29 @@ def autofix_issue(s, models: list[str], old_pitch: int, new_pitch: int, main_nam
             "old_pitch": old_pitch, "new_pitch": new_pitch,
             "reasons": [f"pitch auto-corrected to the consensus of {', '.join(models)}: "
                         f"{old_pitch} -> {new_pitch} MIDI ({main_name} said {old_pitch})"]}
+
+
+# Song-level check (184 library songs, BENCHMARK.md "Lyrics warning"): songs where Whisper heard
+# < 40 % of the lyrics, or where >= half the lines are uncertain, are much worse on average
+# (57 % of words timed right vs 80 %); the rule flags 17 % of songs and 18 of the 29 worst.
+SONG_HEARD_MIN = 0.4
+SONG_UNSURE_SHARE = 0.5
+
+
+def song_check(info: dict, start: float = 0.0) -> dict | None:
+    """One song-level issue when the whole song needs a careful look, else None."""
+    reasons = []
+    heard = info.get("heard")
+    if heard is not None and heard < SONG_HEARD_MIN:
+        reasons.append(f"Only {round(100 * heard)} % of the lyrics were heard in the singing – they may be "
+                       "another version, the wrong song, or partly missing")
+    lines = info.get("lines") or []
+    if lines:
+        share = info.get("low_confidence_lines", 0) / len(lines)
+        if share >= SONG_UNSURE_SHARE:
+            reasons.append(f"{round(100 * share)} % of the lines are uncertain")
+    if not reasons:
+        return None
+    return {"kind": "song_check", "line": None, "start": round(start, 3), "end": round(start + 0.5, 3),
+            "risk": 0.95, "text": "Check this song carefully" if heard is None or heard >= SONG_HEARD_MIN
+            else "Lyrics may not match the singing", "reasons": reasons}

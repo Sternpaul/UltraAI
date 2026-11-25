@@ -102,6 +102,8 @@ def apply_options(spec: dict) -> dict:
         env = config.env_of(k)
         if v:
             os.environ[env] = str(v)
+        elif k in opts and k in ("pitch_check", "sep_check", "lead"):
+            os.environ[env] = ""  # explicitly none (an empty list), not the registered default
         else:
             os.environ.pop(env, None)
     cookies = (spec.get("options") or {}).get("cookies") or spec.get("cookies")
@@ -396,7 +398,8 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
     write(song, out / "song.txt")
     write_byproducts(song, out / "song.txt")
     side = {k: info.get(k) for k in ("issues", "words", "lines", "risk_model", "structure", "candidate",
-                                      "candidates", "anchored", "asr_coverage")}
+                                      "candidates", "anchored", "asr_coverage", "heard", "low_confidence_lines",
+                                      "song_warning")}
     side.update(lyrics_source=source, language=lang_name, separation=sep)
     side["lyrics"] = lyrics_summary(cands, info, source)
     from .batch import yt_sidecar_fields

@@ -163,7 +163,17 @@ warnings placed at random in the song; *new* = problems no issue-model warning t
 * Double-check warnings are real signal: ~80 % hit a problem vs ~42 % by chance.
 * They find problems the issue model misses (mostly wrong pitches) — about 8 per song for RMVPE.
 * **RMVPE as a pitch double check is the best value**: most new finds, seconds per song.
-  Candidate default (warnings only); a second separation adds ~5 new finds per song for minutes.
+  **Default since 0.1.17** (warnings only); a second separation adds ~5 new finds per song for minutes.
+
+## Song-level warning: "Lyrics may not match the singing" (184 library songs)
+
+Which song-level signal predicts a poor result (< 60 % of words timed right; 29 songs)?
+Whisper's share of the lyrics it heard alone is moderate (AUC 0.77: it cannot see charting
+differences like vocables or ad-libs); the share of uncertain lines (issue model) is strong (AUC
+0.89). Rule in `issues.song_check`: **heard < 40 % or ≥ 50 % of lines uncertain** flags 32 songs
+(17 %) and catches 18 of the 29 poor ones; flagged songs average 57 % words right vs 80 % for the
+rest. It is a warning only (scores unchanged on 194 songs); the Studio shows it in the library
+until its issue is marked OK.
 
 ## Current recommendations
 

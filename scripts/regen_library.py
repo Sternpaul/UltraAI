@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 os.environ.setdefault("ULTRAAI_SEPARATION", "htdemucs")
+os.environ.setdefault("ULTRAAI_PITCH_CHECK", "")  # double checks only add warnings; keep gate runs fast
 
 from ultraai.audio import work_dir  # noqa: E402
 from ultraai.byproducts import write_byproducts  # noqa: E402

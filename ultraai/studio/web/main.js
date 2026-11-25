@@ -118,7 +118,8 @@ function library() {
       h("div", { class: "name" },
         h("div", { class: "title" }, s.title || "(untitled)"),
         h("div", { class: "artist" }, s.artist || "unknown artist"),
-        s.error ? h("div", { class: "err" }, s.error) : null),
+        s.error ? h("div", { class: "err" }, s.error) : null,
+        s.warning && s.state !== "error" ? h("div", { class: "warn", title: "Open the song: the first issue says why" }, `⚠ ${s.warning}`) : null),
       h("div", { class: "status" }, h("span", { class: `chip ${s.state}` }, STATE_LABEL[s.state] || s.state), " ", stepsBtn,
         sub ? h("div", { class: "sub" }, sub, eta ? ` · ${eta}` : "") : null, bar),
       h("div", { class: "issues" }, s.state === "needs_review" ? `${s.open_issues} issue${s.open_issues === 1 ? "" : "s"}` : ""),
@@ -244,7 +245,7 @@ const FIXED_RATE = 0.5 + 0.35 + 0.12;   // analysis, listening, aligning (s per 
 export async function processDialog(title = "Processing options", start = null) {
   const [models, settings] = await Promise.all([modelsCache ?? api("/api/models"), api("/api/settings")]);
   modelsCache = models;
-  const o = { separation: "htdemucs", pitch: "swift", pitch_check: [], sep_check: [], lead: "", notes: "singer",
+  const o = { separation: "htdemucs", pitch: "swift", pitch_check: ["rmvpe"], sep_check: [], lead: "", notes: "singer",
     ...(settings.defaults || {}), ...(start || {}) };
   const dlg = document.getElementById("process-dialog"), box = document.getElementById("process-opts");
   document.getElementById("process-title").textContent = title;
