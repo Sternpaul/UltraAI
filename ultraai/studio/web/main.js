@@ -248,17 +248,24 @@ export async function processDialog(title = "Processing options", start = null) 
     ...(settings.defaults || {}), ...(start || {}) };
   const dlg = document.getElementById("process-dialog"), box = document.getElementById("process-opts");
   document.getElementById("process-title").textContent = title;
-  const best = g => {  // best measured timing / pitch in a group, for the ★ marks
-    const b = models[g].filter(m => m.bench);
-    return { timing: Math.max(...b.map(m => m.bench.timing)), pitch: Math.max(...b.map(m => m.bench.pitch)) };
+  const best = (g, kind) => {  // best measured timing / pitch in a group, for the ★ marks
+    const b = models[g].filter(m => m[kind]);
+    return { timing: Math.max(...b.map(m => m[kind].timing ?? 0)), pitch: Math.max(...b.map(m => m[kind].pitch)) };
+  };
+  const scores = (g, m, kind) => {  // ★ only on the many-song scores when a group has them
+    const star = kind === "wide" || !models[g].some(x => x.wide);
+    const b = star ? best(g, kind) : {}, s = m[kind], parts = [];
+    if (g !== "pitch") parts.push(`timing ${s.timing.toFixed(1)}${s.timing === b.timing ? " ★" : ""}`);
+    parts.push(`pitch ${s.pitch.toFixed(1)}${s.pitch === b.pitch ? " ★" : ""}`);
+    return parts.join(" · ");
   };
   const benchText = (g, m) => {
     if (g === "notes") return m.note;
-    if (!m.bench) return m.key === "" ? "" : `not measured yet · ${costText(m.rate)}`;
-    const b = best(g);
+    if (!m.bench && !m.wide) return m.key === "" ? "" : `not measured yet · ${costText(m.rate)}`;
+    const ws = models.wide_songs?.[g];
     const parts = [];
-    if (g !== "pitch") parts.push(`timing ${m.bench.timing.toFixed(1)}${m.bench.timing === b.timing ? " ★" : ""}`);
-    parts.push(`pitch ${m.bench.pitch.toFixed(1)}${m.bench.pitch === b.pitch ? " ★" : ""}`);
+    if (m.wide) parts.push(`${ws} songs: ${scores(g, m, "wide")}`);
+    if (m.bench) parts.push(`${m.wide ? "3 songs: " : ""}${scores(g, m, "bench")}`);
     if (m.key) parts.push(costText(m.rate));
     return parts.join(" · ");
   };
@@ -276,7 +283,8 @@ export async function processDialog(title = "Processing options", start = null) 
   const bs = models.bench_songs || [];
   box.replaceChildren(
     bs.length ? h("p", { class: "muted benchnote" }, `Scores: % of words timed within 250 ms and % of notes on the right pitch, ` +
-      `measured against hand-made songs (${bs.length} test songs: ${bs.join(", ")}). ★ = best measured.`) : null,
+      `measured against hand-made songs. Models with a "N songs" score were tested on many songs, the others only on ` +
+      `${bs.length} (${bs.join(", ")}) - small differences there can be luck. ★ = best measured.`) : null,
     radio("separation", "separation", "Vocal separation"),
     radio("pitch", "pitch", "Pitch model"),
     checks("separation", "sep_check", "separation", "Double-check with these separations"),

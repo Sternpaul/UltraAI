@@ -24,10 +24,12 @@ files, averaged over the benchmark songs:
 
 | Model | timing | timing-rel | pitch | pitch±1 | s/song |
 |---|---|---|---|---|---|
-| melband (Kim RoFormer) | **92.0** | 80.8 | 80.2 | 87.6 | 992 |
+| model_bs_roformer_ep_368_sdr_12.9628 | **92.2** | 81.4 | 80.2 | 87.1 | 7933 |
+| melband_roformer_instvox_duality_v2 | **92.2** | **81.7** | 79.6 | 87.1 | 1677 |
+| melband (Kim RoFormer) | 92.0 | 80.8 | 80.2 | 87.6 | 992 |
 | MelBandRoformerBigSYHFTV1 | 91.8 | 79.6 | 78.9 | 86.8 | 1758 |
 | melband_roformer_big_beta4 | 91.3 | 80.6 | 79.6 | 87.2 | 3147 |
-| melband_roformer_big_beta5e | 91.2 | **81.4** | 81.6 | 88.6 | 2536 |
+| melband_roformer_big_beta5e | 91.2 | 81.4 | 81.6 | 88.6 | 2536 |
 | mel_band_roformer_kim_ft_unwa | 90.7 | 79.0 | 79.5 | 87.2 | 7458 |
 | UVR-MDX-NET-Voc_FT.onnx | 90.6 | 80.0 | 80.8 | 88.7 | **427** |
 | model_mel_band_roformer_ep_3005_sdr_11.4360 | 90.1 | 79.1 | 81.3 | 88.8 | 5612 |
@@ -37,17 +39,38 @@ files, averaged over the benchmark songs:
 | htdemucs_ft | 88.2 | 76.4 | 81.4 | 88.2 | 1468 |
 | htdemucs (default) | 87.6 | 76.7 | 80.1 | 88.4 | ~cached |
 | hdemucs_mmi.yaml | 86.8 | 74.6 | 80.5 | 88.1 | 330 |
-| model_bs_roformer_ep_368_sdr_12.9628 | *(running, 1 of 3 songs)* | | | | ~7700 |
 
 Per song the ranking moves around: on the hardest of the three songs (lowest scores for every
 model) BS-RoFormer ep_368 has the best timing of all models (87.8 vs 86.2 for melband Kim),
-at ~8× melband's time. Its full 3-song result follows when the run finishes.
+at ~8× melband's time. Over all three songs it and InstVoc Duality v2 lead by 0.2 — well inside
+the noise of 3 songs (see the depth pass below: the 3-song order did not hold on 23 songs).
 
 **Not worth their time** (slower *and* worse than melband Kim on these songs): MDX23C,
 mel_band_roformer ep_3005 (viperx), mel_band_roformer_kim_ft_unwa, big_beta4.
 
 **Dropped from the long run** to save ~20 h: BS-RoFormer ep_317 (near twin of ep_368, same
 architecture, SDR 12.98 vs 12.96) and all karaoke/lead models (see the karaoke section below).
+
+## Depth pass: separation models on 25 reference songs (low-power host)
+
+htdemucs (default) and the three cheapest strong models from the table above, on 25
+language/genre-stratified library songs; 23 scored (one song has no pitchable notes, one
+reference file is shifted against its audio). pitch = SwiftF0; minutes = separation + pipeline
+per song on the 4-core ARM host.
+
+| Model | timing | timing-rel | pitch | pitch±1 | min/song | songs better / worse than htdemucs (timing) |
+|---|---|---|---|---|---|---|
+| UVR-MDX-NET-Voc_FT.onnx | **91.2** | 83.1 | 75.6 | 85.7 | 8 | 12 / 5 (median +0.6) |
+| melband (Kim RoFormer) | **91.2** | **83.4** | 75.2 | 85.3 | 27 | 9 / 7 (median 0.0) |
+| Kim_Vocal_2.onnx | 90.9 | 83.0 | 75.9 | **86.0** | 8 | 9 / 7 (median 0.0) |
+| htdemucs (default) | 90.6 | 82.4 | **76.1** | 85.9 | cached | — |
+
+Lesson: on 23 songs the separation model barely matters — all four within 0.6 timing and
+0.9 pitch. The 3-song gaps (melband +4.4 timing over htdemucs, Kim_Vocal_2 +2.4 pitch) were
+the songs, not the models. Single songs still swing by up to ±15 points between models, so a
+second separation stays useful as a *double-check* (disagreements become review issues), not
+as a new default. **htdemucs stays the default**; Voc_FT is the pick for a small timing gain at
+the same speed.
 
 ## Pitch models (3 reference songs, separation = htdemucs)
 
@@ -101,19 +124,23 @@ jitter (timing-rel −1.0) without improving timing. Details on the pull request
 
 ## Current recommendations
 
-* The separation ranking rests on 3 songs only, and the pitch ranking showed that 3 songs can
-  mislead (rmvpe won on 3, swift on 25). The 25-song separation depth pass decides the default.
-* **Best quality:** melband Kim RoFormer separation (timing 92.0) + rmvpe pitch — but ~16 min/song on the bench host.
-* **Best balance:** **Kim_Vocal_2.onnx** separation (timing 90.0 *and* best pitch 82.5, ~7 min/song) + **swift** pitch (best exact pitch on the 25-song set, 71.2; use rmvpe if ±1 semitone matters more, 82.9).
-* **Fastest reasonable:** htdemucs (default) + swift — 87.6 timing, 80.1 pitch, separation cached.
+* 3 songs mislead for both separation and pitch: the 3-song winners (melband, rmvpe) did not
+  win on 23–25 songs. Decide on the depth passes only.
+* **Default: htdemucs + swift.** Best pitch on 23 songs (76.1), timing within 0.6 of the best,
+  fastest.
+* **Slightly better timing:** UVR-MDX-NET-Voc_FT.onnx separation (91.2 vs 90.6 on 23 songs, better
+  on 12 songs and worse on 5), same speed. Not enough to switch the default.
+* **Not worth it on CPU:** melband and all bigger RoFormers — same 23-song result as Voc_FT at
+  3× the time; BS-RoFormer ep_368 is ~2 h per song.
+* **Pitch:** swift; rmvpe only if ±1 semitone matters more than exact pitch.
 * Karaoke/lead models: measured on 25 songs — clear negative (see above), stay off.
 
 ## In progress / planned
 
 | Run | Scope | Status |
 |---|---|---|
-| Long model benchmark (low-power host) | 22 configs × 3 songs (lead models and BS ep_317 dropped); 20 done | BS-RoFormer ep_368, InstVoc Duality v2 left (~6–8 h) |
-| Separation depth pass (low-power host) | htdemucs + Kim_Vocal_2 + Voc_FT + melband × **25 songs** (language/genre-stratified, same selection logic as `bench_cache_fill.py`) | queued after the long run (~10 h) |
+| Long model benchmark (low-power host) | 22 configs × 3 songs (lead models and BS ep_317 dropped) | **done — table above** |
+| Separation depth pass (low-power host) | htdemucs + Kim_Vocal_2 + Voc_FT + melband × **25 songs** | **done — separation barely matters, htdemucs stays** |
 | Pitch depth pass (desktop CPU) | 6 pitch models × **25 songs** | **done — table above** |
 | Lead/karaoke depth pass | 10 lead models × 25 songs | **dropped — KARA_2 already shows a clear negative; see above** |
 | Parameter sweeps | harmonize / melisma / minseg / repair / robust / golden / ASR model | **done — table above, defaults win** |

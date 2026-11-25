@@ -86,6 +86,51 @@
    "min_per_song": 52.5,
    "score": 131.1
   },
+  "melband_roformer_big_beta5e.ckpt": {
+   "timing": 91.2,
+   "timing_100": 81.4,
+   "words": 97.6,
+   "pitch": 81.6,
+   "pitch_1": 88.6,
+   "min_per_song": 42.3,
+   "score": 132.0
+  },
+  "mel_band_roformer_kim_ft_unwa.ckpt": {
+   "timing": 90.7,
+   "timing_100": 79.0,
+   "words": 97.6,
+   "pitch": 79.5,
+   "pitch_1": 87.2,
+   "min_per_song": 124.3,
+   "score": 130.45
+  },
+  "MelBandRoformerBigSYHFTV1.ckpt": {
+   "timing": 91.8,
+   "timing_100": 79.6,
+   "words": 97.6,
+   "pitch": 78.9,
+   "pitch_1": 86.8,
+   "min_per_song": 29.3,
+   "score": 131.25
+  },
+  "model_bs_roformer_ep_368_sdr_12.9628.ckpt": {
+   "timing": 92.2,
+   "timing_100": 81.4,
+   "words": 97.6,
+   "pitch": 80.2,
+   "pitch_1": 87.1,
+   "min_per_song": 132.2,
+   "score": 132.3
+  },
+  "melband_roformer_instvox_duality_v2.ckpt": {
+   "timing": 92.2,
+   "timing_100": 81.7,
+   "words": 97.6,
+   "pitch": 79.6,
+   "pitch_1": 87.1,
+   "min_per_song": 27.9,
+   "score": 132.0
+  },
   "htdemucs": {
    "timing": 87.6,
    "timing_100": 76.7,
@@ -93,7 +138,7 @@
    "pitch": 80.1,
    "pitch_1": 88.4,
    "min_per_song": 7.0,
-   "score": 127.64999999999999
+   "score": 127.65
   }
  },
  "pitch": {
@@ -104,7 +149,7 @@
    "pitch": 80.1,
    "pitch_1": 88.4,
    "min_per_song": 0.1,
-   "score": 127.64999999999999
+   "score": 127.65
   },
   "fcpe": {
    "timing": 87.6,
@@ -122,7 +167,7 @@
    "pitch": 79.2,
    "pitch_1": 88.5,
    "min_per_song": 0.4,
-   "score": 127.19999999999999
+   "score": 127.2
   },
   "crepe-tiny": {
    "timing": 87.6,
@@ -131,7 +176,7 @@
    "pitch": 80.7,
    "pitch_1": 89.0,
    "min_per_song": 0.5,
-   "score": 127.94999999999999
+   "score": 127.95
   },
   "rmvpe": {
    "timing": 87.6,
@@ -158,7 +203,7 @@
    "pitch": 81.6,
    "pitch_1": 88.8,
    "min_per_song": 10.6,
-   "score": 128.39999999999998
+   "score": 128.4
   }
  },
  "lead": {
@@ -169,7 +214,7 @@
    "pitch": 80.1,
    "pitch_1": 88.4,
    "min_per_song": 0.1,
-   "score": 127.64999999999999
+   "score": 127.65
   }
  },
  "baseline": {
@@ -179,6 +224,76 @@
   "pitch": 80.1,
   "pitch_1": 88.4,
   "min_per_song": 0.1,
-  "score": 127.64999999999999
+  "score": 127.65
+ },
+ "wide": {
+  "songs_n": 23,
+  "separation": {
+   "UVR-MDX-NET-Voc_FT.onnx": {
+    "timing": 91.2,
+    "timing_100": 83.1,
+    "words": 92.2,
+    "pitch": 75.6,
+    "pitch_1": 85.7,
+    "score": 129.0
+   },
+   "Kim_Vocal_2.onnx": {
+    "timing": 90.9,
+    "timing_100": 83.0,
+    "words": 92.2,
+    "pitch": 75.9,
+    "pitch_1": 86.0,
+    "score": 128.85
+   },
+   "melband": {
+    "timing": 91.2,
+    "timing_100": 83.4,
+    "words": 92.2,
+    "pitch": 75.2,
+    "pitch_1": 85.3,
+    "score": 128.8
+   },
+   "htdemucs": {
+    "timing": 90.6,
+    "timing_100": 82.4,
+    "words": 92.2,
+    "pitch": 76.1,
+    "pitch_1": 85.9,
+    "score": 128.65
+   }
+  },
+  "pitch": {
+   "swift": {
+    "pitch": 71.2,
+    "pitch_1": 81.8,
+    "score": 35.6
+   },
+   "crepe-tiny": {
+    "pitch": 70.7,
+    "pitch_1": 82.1,
+    "score": 35.35
+   },
+   "rmvpe": {
+    "pitch": 70.6,
+    "pitch_1": 82.9,
+    "score": 35.3
+   },
+   "vote": {
+    "pitch": 70.4,
+    "pitch_1": 81.5,
+    "score": 35.2
+   },
+   "fcpe": {
+    "pitch": 70.0,
+    "pitch_1": 80.8,
+    "score": 35.0
+   },
+   "pesto": {
+    "pitch": 68.6,
+    "pitch_1": 80.5,
+    "score": 34.3
+   }
+  },
+  "pitch_songs_n": 24
  }
 }

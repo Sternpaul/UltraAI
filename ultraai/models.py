@@ -86,13 +86,17 @@ def name(group: str, key: str) -> str:
 def choices() -> dict:
     """For the processing-options window: every model with its benchmark result."""
     b = bench()
-    out: dict = {"bench_songs": b.get("songs", []), "baseline": b.get("baseline", {})}
+    w = b.get("wide", {})
+    out: dict = {"bench_songs": b.get("songs", []), "baseline": b.get("baseline", {}),
+                 "wide_songs": {"separation": w.get("songs_n", 0), "pitch": w.get("pitch_songs_n", 0)}}
     for group, table in (("separation", SEPARATION), ("pitch", PITCH), ("lead", LEAD)):
         rows = []
         for key, (n, by) in table.items():
             rows.append({"key": key, "name": n, "by": by, "rate": rate(group, key) if key else 0.0,
-                         "bench": b.get(group, {}).get(key)})
-        rows.sort(key=lambda r: (r["bench"] is None, -(r["bench"] or {}).get("score", 0)))
+                         "bench": b.get(group, {}).get(key), "wide": w.get(group, {}).get(key)})
+        # measured on many songs first (3 songs can mislead), then by the 3-song score
+        rows.sort(key=lambda r: (r["wide"] is None, -(r["wide"] or {}).get("score", 0),
+                                 r["bench"] is None, -(r["bench"] or {}).get("score", 0)))
         if group == "lead":
             rows.sort(key=lambda r: r["key"] != "")
         out[group] = rows
