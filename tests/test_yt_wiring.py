@@ -170,8 +170,12 @@ def test_generate_sung_uses_line_times_as_anchors(tmp_path, monkeypatch):
 
     monkeypatch.setattr(generate, "generate_from_lines", fake_gfl)
     # synced candidate + line_times: the sub times reach the anchored alignment unchanged
-    generate.generate_sung(audio, [synced], "en", {}, line_times=sub_times)
+    song, info = generate.generate_sung(audio, [synced], "en", {}, line_times=sub_times)
     assert captured["times"] == sub_times
+    # the transcript words ride along in info as JSON-serializable triples (sidecar metric)
+    assert info["asr_word_list"] == [[1.0, 1.5, "one"], [1.0, 1.5, "two"], [5.0, 5.5, "three"],
+                                     [5.0, 5.5, "four"], [9.0, 9.5, "five"], [9.0, 9.5, "six"]]
+    json.dumps(info)
     # even a plain (unsynced) candidate is anchored when line_times are passed explicitly
     generate.generate_sung(audio, [plain], "en", {}, line_times=sub_times)
     assert captured["times"] == sub_times
@@ -220,9 +224,8 @@ def test_sidecar_has_yt_fields_when_subs_and_asr_available(tmp_path, monkeypatch
     track = _track(tmp_path)
     (tmp_path / "Artist - Title.ytid").write_text(YTID + "\n")
     _patch_subs(monkeypatch)
-    asr_words = [AsrWord(1.0, 1.4, "one", 0.9), AsrWord(1.4, 1.8, "two", 0.9),
-                 AsrWord(5.0, 5.4, "three", 0.9), AsrWord(5.4, 5.8, "four", 0.9),
-                 AsrWord(9.0, 9.4, "five", 0.9), AsrWord(9.4, 9.8, "six", 0.9)]
+    asr_words = [[1.0, 1.4, "one"], [1.4, 1.8, "two"], [5.0, 5.4, "three"], [5.4, 5.8, "four"],
+                 [9.0, 9.4, "five"], [9.4, 9.8, "six"]]  # production shape: [start, end, text]
 
     def fake_generate_sung(audio, cands, language, meta, separation=None, line_times=None):
         return Song(), {"candidate": 0, "candidates": 1, "structure": "lrc-confirmed",

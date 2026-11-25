@@ -705,6 +705,12 @@ def generate_sung(audio: Path, candidates: list, language: str, meta: dict[str, 
             flags.append({"heard": ln.matched / max(1, ln.words), "repeat": ln.line in seen})
             seen.add(ln.line)
     asr_words = [w for seg in asr for w in seg.words]
+    # JSON-serializable [start, end, text] triples (generation_info is dumped to the
+    # sidecar); consumed by batch.yt_sidecar_fields for the yt_agreement metric
+    info["asr_word_list"] = [
+        [w.start if hasattr(w, "start") else w[0],
+         w.end if hasattr(w, "end") else w[1],
+         w.text if hasattr(w, "text") else w[2]] for w in asr_words]
     song, more = generate_from_lines(audio, texts, times, language, meta, separation,
                                      trusted=trusted and config.get_bool("m3_trust"),
                                      asr_words=asr_words, line_flags=flags)
@@ -950,8 +956,6 @@ def generate_from_lines(audio: Path, texts: list[str], times: list[float] | None
     free = words
     expected: list[float | None] | None = None
     info: dict = {"lrc_synced": times is not None, "anchored": False}
-    if asr_words:
-        info["asr_word_list"] = list(asr_words)  # for the yt_agreement sidecar metric
     if times is not None:
         offsets = aligner.lrc_offsets(lyrics, words, times)
         if offsets is None and trusted:
