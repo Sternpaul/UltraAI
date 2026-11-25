@@ -167,6 +167,11 @@ cookies file we still only got 7/25; PO-token support would be the robust fix):
   line_f1/word_recall recover (−0.3 / 0.0) but timing drops: −3.7 / −4.8 (caption-chunk
   starts ≠ musical line starts; only 3/7 songs engaged the anchored path). → subs are not
   a useful timing source either.
+- **Corrected run with exact USDB ytids** (`.usdb` meta_tags `v=`, no search; n=3 with
+  usable subs): times-only becomes neutral (timing −0.4, timing-rel **+1.1**, text flat) —
+  the earlier timing drop was mostly wrong-video. Full subs as lyrics: catastrophic
+  (word_recall −60.8, line_f1 −23.3) even for the exact video. → subs as lyric text: never;
+  exact-ytid times-only anchors: neutral, keep `ULTRAAI_YT_ANCHOR` off by default.
 - **`yt_agreement`** (Whisper vs YouTube-ASR word agreement) is a useful free quality signal:
   mean 0.57 on the 7 songs, range 0.04–0.84 — garbled auto-captions are detectable this way.
 
