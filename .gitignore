@@ -15,3 +15,9 @@ ultraai/issue_model.prev.pkl
 *.m4a
 *.mp3
 /packaging/tools/
+
+# secrets - never commit
+cookies.txt
+cookies*.txt
+*.cookies
+cookies/
