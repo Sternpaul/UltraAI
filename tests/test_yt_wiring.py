@@ -158,6 +158,9 @@ def test_generate_sung_uses_line_times_as_anchors(tmp_path, monkeypatch):
         pitch = None
 
     monkeypatch.setattr(generate, "analyse", lambda *a, **k: FakeAnalysis())
+    # the no-line_times case asks ffprobe for the audio duration (CI has no ffprobe)
+    from ultraai import lrc
+    monkeypatch.setattr(lrc, "audio_duration", lambda p: 30.0)
     asr = [AsrSegment(t, t + 1.0, ln, [AsrWord(t, t + 0.5, w, 0.9) for w in ln.split()])
            for t, ln in zip(SUB_TIMES, SUB_LINES)]
     monkeypatch.setattr("ultraai.transcribe.transcribe", lambda *a, **k: asr)
