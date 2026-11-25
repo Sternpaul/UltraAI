@@ -264,9 +264,9 @@ def test_settings_put_accepts_existing_file_and_get_returns_path(studio_client, 
     f.write_text(f"# fake {FAKE_COOKIE_MARKER}\n", encoding="utf-8")
     r = client.put("/api/settings", json={"cookies": str(f)}, headers=H)
     assert r.status_code == 200, r.text
-    assert settings.cookies == str(f.resolve())  # stored canonical (resolved) form
+    assert settings.cookies == str(f)  # stored expanded form (path, not contents)
     got = client.get("/api/settings").json()
-    assert got["cookies"] == str(f.resolve())  # a path is not secret
+    assert got["cookies"] == str(f)  # a path is not secret
     # clearing works too
     r = client.put("/api/settings", json={"cookies": ""}, headers=H)
     assert r.status_code == 200 and settings.cookies == ""
