@@ -116,8 +116,9 @@ jitter (timing-rel −1.0) without improving timing. Details on the pull request
 | Separation depth pass (low-power host) | htdemucs + Kim_Vocal_2 + Voc_FT + melband × **25 songs** (language/genre-stratified, same selection logic as `bench_cache_fill.py`) | queued after the long run (~10 h) |
 | Pitch depth pass (desktop CPU) | 6 pitch models × **25 songs** | **done — table above** |
 | Lead/karaoke depth pass | 10 lead models × 25 songs | **dropped — KARA_2 already shows a clear negative; see above** |
-| Parameter sweeps | alignment windows, note styles, harmonize tolerances (each ~7 min on 25 songs) | planned |
-| Alternative timing approach | Whisper word-timestamps instead of forced alignment ("m4") | planned |
+| Parameter sweeps | harmonize / melisma / minseg / repair / robust / golden / ASR model | **done — table above, defaults win** |
+| Alternative timing approach | Whisper word-timestamps instead of forced alignment ("m4") | **done — clearly worse, dead end** |
+| Check-model combos (double-check auto-fix) | 5 combos × 25 songs | **done — negative on 25 songs, keep off** |
 
 ## Sweep results (25 reference songs, m3, deltas vs base 87.2 / 77.2 / 69.5)
 
@@ -139,6 +140,11 @@ All parameter sweeps leave timing unchanged — **the current defaults are fine*
 a wash at ~4× the transcription cost). Double-check auto-correct combos (rmvpe+fcpe,
 rmvpe+crepe-tiny, fcpe+crepe-tiny, +pesto, +crepe-tiny) all *lowered* pitch by 0.2–0.6 on the
 25-song set — the +0.6 seen on 3 songs did not generalize → keep `ULTRAAI_CHECK_AUTOFIX` off.
+
+**Alternative timing approach ("m4": Whisper word-timestamps directly as note times, no
+forced alignment):** timing 71.1 / timing-rel 61.2 / word_recall 69.8 vs m3's 87.2 / 77.2 /
+93.7 on the same 25 songs — clearly worse (Whisper alone misses/repeats words vs the lyrics).
+The CTC alignment + lyric matching stays.
 
 **How much can 3 songs mislead?** Leave-one-out CIs on the 3-song long run: melband timing
 92.0 [88.5..94.8] vs Kim_Vocal_2 90.0 [86.7..93.8] — fully overlapping, i.e. the 3-song
