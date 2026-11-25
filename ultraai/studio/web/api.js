@@ -1,10 +1,18 @@
-// Small client for the Studio backend.  Mutating requests carry the X-UltraAI header.
+// Small client for the Studio backend.  Mutating requests carry the per-install token
+// (injected into index.html as a meta tag) in the x-ultraai header.
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  constructor(msg, status) {
+    super(msg);
+    this.status = status;
+  }
+}
+
+const TOKEN = document.querySelector('meta[name="ultraai-token"]')?.content || "";
 
 export async function api(path, { method = "GET", json, form } = {}) {
   const opts = { method, headers: {} };
-  if (method !== "GET") opts.headers["X-UltraAI"] = "1";
+  if (method !== "GET") opts.headers["x-ultraai"] = TOKEN;
   if (json !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(json);
@@ -16,7 +24,7 @@ export async function api(path, { method = "GET", json, form } = {}) {
   const body = isJson ? await r.json() : await r.text();
   if (!r.ok) {
     const msg = isJson ? (body.detail ?? JSON.stringify(body)) : body;
-    throw new ApiError(typeof msg === "string" ? msg : JSON.stringify(msg));
+    throw new ApiError(typeof msg === "string" ? msg : JSON.stringify(msg), r.status);
   }
   return body;
 }
