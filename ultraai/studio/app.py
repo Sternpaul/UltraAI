@@ -442,10 +442,10 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
                 # the path only names an existing file the user picked and gets 0600).
                 if path.startswith("~"):
                     path = path.replace("~", os.path.expanduser("~"), 1)
-                if not Path(path).is_file():  # codeql[py/path-injection]
+                if not Path(path).is_file():  # codeql[py/path-injection] # lgtm[py/path-injection]
                     raise HTTPException(400, "cookies path must name an existing file")
                 try:
-                    os.chmod(path, 0o600)  # codeql[py/path-injection]
+                    os.chmod(path, 0o600)  # codeql[py/path-injection] # lgtm[py/path-injection]
                 except OSError:
                     pass
             body["cookies"] = path
