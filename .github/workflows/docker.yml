@@ -12,39 +12,50 @@ permissions:
   packages: write      # push to ghcr.io on release tags
 
 jobs:
-  # PRs: build both platforms without pushing, then audit the worker dependencies
-  # inside the built image. (The pip-audit job in tests.yml only covers the light
+  # PRs: build each platform without pushing, on its native runner — the arm64
+  # leg on GitHub's arm64 hosts is ~10x faster than emulating it with QEMU on an
+  # amd64 runner. The amd64 leg then audits the worker dependencies inside the
+  # built image. (The pip-audit job in tests.yml only covers the light
   # [dev,test] env — the multi-GB worker stack is only installed here.)
   build:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v4
 
-      - name: Build both platforms (no push)
+      - name: Build the platform (no push)
         uses: docker/build-push-action@v7
         with:
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: false
           outputs: type=cacheonly
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
 
       - name: Load the linux/amd64 image (cache hit from the step above)
+        if: matrix.platform == 'linux/amd64'
         uses: docker/build-push-action@v7
         with:
           platforms: linux/amd64
           tags: ultraai-worker:ci
           push: false
           load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
 
       - name: pip-audit the worker dependencies inside the image
+        if: matrix.platform == 'linux/amd64'
         run: docker run --rm --entrypoint sh ultraai-worker:ci -c "pip install --no-cache-dir pip-audit && pip-audit --desc --skip-editable"
 
   # Release tags (and manual runs): multi-arch build + push to ghcr.io.
