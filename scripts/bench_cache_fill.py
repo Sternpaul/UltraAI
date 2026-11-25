@@ -52,8 +52,9 @@ def _genre(meta: dict) -> str:
 
 
 def select(cases, n: int) -> list:
-    """Deterministic language-stratified (proportional, min 1 per language, majority
-    language capped at half), genre-round-robin pick of up to ``n`` uncached cases."""
+    """Deterministic language-stratified (proportional to the library, min 1 per
+    language, majority language capped at 90% so the sample mirrors the library's
+    real language mix), genre-round-robin pick of up to ``n`` uncached cases."""
     todo = [c for c in cases if c.audio is not None and not cached(work_dir(c.audio))]
     by_lang: dict[str, list] = {}
     for c in todo:
@@ -61,8 +62,8 @@ def select(cases, n: int) -> list:
     langs = sorted(by_lang, key=lambda l: (-len(by_lang[l]), l))
     alloc = {l: max(1, round(n * len(by_lang[l]) / max(1, len(todo)))) for l in langs}
     majority = max(alloc, key=lambda l: len(by_lang[l]), default=None)
-    if majority is not None and alloc[majority] > max(1, n // 2):
-        alloc[majority] = max(1, n // 2)
+    if majority is not None and alloc[majority] > max(1, round(9 * n / 10)):
+        alloc[majority] = max(1, round(9 * n / 10))
     while sum(alloc.values()) > n:
         l = max((l for l in langs if alloc[l] > 1), key=lambda l: alloc[l], default=None)
         if l is None:
