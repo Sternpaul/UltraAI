@@ -28,7 +28,7 @@ YT_URL = "https://www.youtube.com/watch?v={ytid}"
 
 # --sub-langs value: manual languages first; auto captions only fill languages
 # without a manual track (that per-language preference is yt-dlp's own).
-SUB_LANGS = ["en", "en-US", "en-GB", "el"]
+SUB_LANGS = ["en", "en-US", "en-GB", "de", "el"]
 
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW, as in studio/importer.py
 
@@ -67,21 +67,21 @@ def _cache_write(cache: Path, data) -> None:
 
 
 def _pick_sub_file(tmp: Path) -> Path | None:
-    """Choose the json3 file to keep: manual (unmarked) over auto ('.auto.' in the
-    name), then the language that comes first in SUB_LANGS."""
-    files = sorted(tmp.glob("*.json3"))
-    if not files:
-        return None
+    """Choose the json3 file to keep: the language that comes first in SUB_LANGS.
 
+    yt-dlp writes the manual and the auto track of the same language to the same
+    file name (no ``.auto.`` marker), preferring the manual track itself, so what
+    is left to pick here is the language."""
     def key(f: Path):
         lang = f.name[len("sub."):-len(".json3")] if f.name.startswith("sub.") else f.stem
         try:
             order = SUB_LANGS.index(lang)
         except ValueError:
             order = len(SUB_LANGS)
-        return (".auto." in f.name, order, f.name)
+        return (order, f.name)
 
-    return sorted(files, key=key)[0]
+    files = sorted(tmp.glob("*.json3"))
+    return sorted(files, key=key)[0] if files else None
 
 
 def fetch_subs(ytid: str, manual: bool = True) -> dict | None:

@@ -104,13 +104,19 @@ def test_no_sub_files_returns_none(cache_dir, monkeypatch):
     assert ytsubs.fetch_subs("vid5") is None
 
 
-def test_manual_sub_preferred_over_auto(cache_dir, monkeypatch):
-    manual = {"events": [_ev(0, 100, [_seg("real lyrics", 0, 100)])]}
-    auto = {"events": [_ev(0, 100, [_seg("auto caption", 0, 100)])]}
+def test_pick_sub_file_prefers_first_sub_langs_entry(cache_dir, monkeypatch):
+    # yt-dlp writes one file per language (manual over auto is yt-dlp's own doing,
+    # same file name), so _pick_sub_file only chooses the language
+    en = {"events": [_ev(0, 100, [_seg("english", 0, 100)])]}
+    de = {"events": [_ev(0, 100, [_seg("deutsch", 0, 100)])]}
+    el = {"events": [_ev(0, 100, [_seg("greek", 0, 100)])]}
     calls = []
     monkeypatch.setattr(ytsubs, "_run",
-                        _fake_run_factory(calls, {"sub.en.json3": manual, "sub.en.auto.json3": auto}))
-    assert ytsubs.fetch_subs("vid6") == manual
+                        _fake_run_factory(calls, {"sub.de.json3": de, "sub.el.json3": el,
+                                                  "sub.en.json3": en}))
+    assert ytsubs.fetch_subs("vid6") == en  # "en" precedes "de" and "el" in SUB_LANGS
+    langs = calls[0][calls[0].index("--sub-langs") + 1]  # German captions are asked for too
+    assert langs.split(",") == ["en", "en-US", "en-GB", "de", "el"]
 
 
 def test_sub_lines_times_are_first_word_start_and_cleaned(cache_dir):
