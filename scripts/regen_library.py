@@ -17,6 +17,7 @@ from pathlib import Path
 os.environ.setdefault("ULTRAAI_SEPARATION", "htdemucs")
 
 from ultraai.audio import work_dir  # noqa: E402
+from ultraai.byproducts import write_byproducts  # noqa: E402
 from ultraai.eval.harness import GENERATORS, load_cases  # noqa: E402
 from ultraai.eval.metrics import compare  # noqa: E402
 from ultraai.ultrastar.writer import write  # noqa: E402
@@ -50,6 +51,7 @@ def main(tag, gens="m2,m3", root="library", out="out/library"):
                     hyp = GENERATORS[gen](case)
                 (dest / gen).mkdir(exist_ok=True)
                 write(hyp, dest / gen / f"{case.name}.txt")
+                write_byproducts(hyp, dest / gen / f"{case.name}.txt")
                 if getattr(hyp, "generation_info", None):
                     (dest / gen / f"{case.name}.ultraai.json").write_text(
                         json.dumps(hyp.generation_info, ensure_ascii=False), encoding="utf-8")

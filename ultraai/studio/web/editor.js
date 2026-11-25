@@ -45,9 +45,13 @@ export async function openEditor(root, id, crumbs) {
 
   // ---------------------------------------------------------------- state
   const doc = data.doc;
+  let baseVersion = data.doc_version ?? 0;  // optimistic concurrency: PUT /doc sends this back
+  // Issues are listed in song order (by start time), so you can work through them top to bottom;
+  // risk is only a tiebreaker for issues at the same timestamp.
+  const byTime = (a, b) => a.start - b.start || b.risk - a.risk;
   const ed = {
     voice: 0, lines: doc.voices[0].lines, selection: new Set(), editor: editorData,
-    issues: data.issues.map(i => ({ ...i })).sort((a, b) => b.risk - a.risk), extraNotes: new Set(), missingMarks: [],
+    issues: data.issues.map(i => ({ ...i })).sort(byTime), extraNotes: new Set(), missingMarks: [],
     currentIssue: null, loop: null, band: null, hoverBreak: null, duration: 0, curveOffset: 0,
     pitchSpan: { lo: 0, hi: 12 },
   };
@@ -59,7 +63,7 @@ export async function openEditor(root, id, crumbs) {
     const cur = ed.currentIssue?.key;
     const live = [...(lyricText ? lyricIssues(ed.lines, lyricText) : []), ...pitchIssues(ed.lines, ed.editor, ed.curveOffset)];
     const li = live.map(i => ({ ...i, dismissed: dismissedKeys.has(i.key) }));
-    ed.issues = [...serverIssues, ...li].sort((a, b) => b.risk - a.risk);
+    ed.issues = [...serverIssues, ...li].sort(byTime);
     ed.extraNotes = new Set(li.filter(i => i.kind === "lyrics_extra" && !i.dismissed).flatMap(i => i.notes));
     ed.missingMarks = li.filter(i => i.kind === "lyrics_missing" && !i.dismissed);
     ed.currentIssue = cur ? ed.issues.find(i => i.key === cur) ?? null : null;
@@ -143,7 +147,7 @@ export async function openEditor(root, id, crumbs) {
     h("div", { class: "group" }, goldenSel, goldenShare),
     h("div", { class: "group" }, undoBtn, redoBtn, voiceSel),
     h("span", { class: "spacer" }),
-    h("div", { class: "group" }, saveEl, btn("USDB", "The txt ready for uploading to USDB (with the YouTube link)", () => usdbDialog()),
+    h("div", { class: "group" }, saveEl, btn("USDB", "The txt ready for uploading to USDB (with the YouTube and cover links)", () => usdbDialog()),
       reviewedBtn, btn("?", "Shortcuts (?)", () => help())));
 
   const pvCanvas = h("canvas", { "aria-label": "Game preview" });
@@ -169,7 +173,7 @@ export async function openEditor(root, id, crumbs) {
   const issueList = h("div", { class: "panel", role: "tabpanel" });
   const lineList = h("div", { class: "panel", role: "tabpanel", hidden: true });
   const li = data.lyrics_info || {};
-  const lyrInfo = h("div", { class: "lyrinfo", title: li.structure_text || "" },
+  const lyrInfo = h("div", { class: "lyrinfo" + (li.source === "yt" ? " warn" : ""), title: li.structure_text || "" },
     lyricsLabel(li, data.lyrics_source) || "lyrics: unknown",
     li.structure_text ? h("div", { class: "muted" }, li.structure_text) : null);
   const side = h("aside", { class: "side" }, lyrInfo, h("div", { class: "tabs", role: "tablist" }, issueTab, lineTab, repTab), issueHead, issueList, lineList, repList, hint);
@@ -522,7 +526,7 @@ export async function openEditor(root, id, crumbs) {
     renderIssues(); render();
   }
   function stepIssue(dir) {
-    const open = ed.issues.filter(i => !i.dismissed).sort((a, b) => a.start - b.start);
+    const open = ed.issues.filter(i => !i.dismissed).sort(byTime);
     if (!open.length) return toast("No open issues");
     const cur = ed.currentIssue;
     let k = cur ? open.findIndex(i => i === cur) : -1;
@@ -571,11 +575,19 @@ export async function openEditor(root, id, crumbs) {
     if (!dirty || saving) return;
     saving = true; dirty = false; setSave("saving");
     try {
-      const r = await api(`/api/songs/${id}/doc`, { method: "PUT", json: { doc, note: "edit" } });
+      const r = await api(`/api/songs/${id}/doc`, { method: "PUT", json: { doc, note: "edit", base_version: baseVersion } });
+      baseVersion = r.doc_version ?? baseVersion + 1;
       setSave(dirty ? "unsaved" : "saved", (r.problems || []).join("\n"));
       if (r.problems?.length) toast(`Saved with warnings: ${r.problems[0]}`);
     } catch (e) {
-      dirty = true; setSave("error", e.message); toast(`Save failed: ${e.message}`);
+      dirty = true;
+      if (e.status === 409) {  // the song changed on the server (reprocessed or saved elsewhere)
+        setSave("error", "changed on the server");
+        toast("This song changed on the server (reprocessed or saved in another tab).");
+        if (confirm("This song changed on the server. Reload the page to get the newest version?")) location.reload();
+      } else {
+        setSave("error", e.message); toast(`Save failed: ${e.message}`);
+      }
     } finally {
       saving = false;
       if (dirty && saveState !== "error") saveTimer = setTimeout(save, 1200);
@@ -817,7 +829,7 @@ export async function openEditor(root, id, crumbs) {
       const a = h("a", { href: URL.createObjectURL(new Blob([ta.value], { type: "text/plain" })), download: `${info.artist} - ${info.title}.txt` });
       document.body.append(a); a.click(); a.remove();
     };
-    if (!/#VIDEO:v=/.test(ta.value)) toast("No YouTube link for this song – add it from a link to include one");
+    if (!/#VIDEO:v=/.test(ta.value)) toast("No YouTube link for this song – add it from a link to include the video and cover links");
     dlg.showModal();
   }
   function help() {

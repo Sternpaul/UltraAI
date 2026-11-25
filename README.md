@@ -81,7 +81,7 @@ The library is a normal USDX song folder (`Artist - Title/Artist - Title.txt`, `
 * Double-click a note to change its syllable (`Tab` = next note); `Enter` edits the whole line
   (`|` separates syllables: `Re|lease my bo|dy`).
 * *★ Golden notes…* re-places golden notes (hard jumps, big held notes, highest notes, mix).
-* *USDB* shows the txt ready for usdb.animux.de (`#VIDEO:v=<YouTube id>` for USDB Syncer).
+* *USDB* shows the txt ready for usdb.animux.de: the `#VIDEO` meta tags — `v=<YouTube id>` for audio/video and `co=<url>` (the video's thumbnail) for the cover — are the links USDB Syncer fetches the media from.
 * `T` (tap mode): the line plays, hold any letter key for each syllable – fastest way to
   re-time a line. `P` sets selected notes to the sung pitch.
 * `Space` play, `L` loop, `V` vocals only, `[` `]` speed, `Ctrl+Z` undo, `?` all shortcuts.
@@ -107,6 +107,20 @@ Linux with Python ≥ 3.11 and ffmpeg (CPU is enough; a GPU makes it ~10× faste
 git clone https://github.com/Sternpaul/UltraAI.git && cd UltraAI
 python3 -m venv .venv && .venv/bin/pip install -e ".[worker]"
 ```
+
+Or run the worker as a container — the image (linux/amd64 + linux/arm64, ffmpeg included)
+is published per release tag:
+
+```bash
+docker pull ghcr.io/sternpaul/ultraai-worker:v0.1.13   # image tag = release tag
+docker run --rm \
+  -v "$HOME/.cache/ultraai:/cache" \
+  -v "$PWD:/work" -w /work \
+  ghcr.io/sternpaul/ultraai-worker:v0.1.13 process JOBDIR
+```
+
+The image sets `ULTRAAI_CACHE=/cache` and declares `/cache` a volume, so mount the host
+cache there to keep model downloads and per-song step caches between runs.
 
 The Studio expects it in `~/UltraAI` (configurable). Jobs run one at a time in the
 background (`systemd-run` in the `ultraai.slice` user slice when available), so closing the

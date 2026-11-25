@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import statistics
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -286,3 +287,70 @@ def to_json(words: list[WordInfo]) -> list[dict]:
     return [{"text": w.text, "start": round(w.start, 3), "end": round(w.end, 3), "line": w.line,
              "src_line": w.src_line, "risk": round(w.risk, 4),
              "f": {k: round(v, 4) for k, v in w.f.items()}} for w in words]
+
+
+# ---- double-check consensus auto-correct (roadmap B3, PR-10) -----------------
+#
+# When more than one pitch double-check model is configured (ULTRAAI_PITCH_CHECK) and at
+# least two of them agree with each other on a sung note while disagreeing with the main
+# pitch model, the note's pitch is corrected to their consensus.  Called from
+# generate.double_check_issues with per-model syllable pitches already octave-folded
+# next to the main pitch (generate._fold).
+
+AUTOFIX_AGREE_SEMITONES = 1.0    # two check models "agree" when their octave-folded
+                                 # pitches for the note are within this many semitones
+AUTOFIX_MIN_OFF_SEMITONES = 2.0  # the consensus must differ from the main pitch by at
+                                 # least this many semitones (octave-folded) to correct
+AUTOFIX_MIN_MODELS = 2           # need >= this many check models configured, and >= this
+                                 # many of them agreeing, before auto-correcting
+
+
+def consensus_autofix(main_pitch: float, check_pitches: dict[str, float],
+                      agree_tol: float = AUTOFIX_AGREE_SEMITONES,
+                      min_off: float = AUTOFIX_MIN_OFF_SEMITONES,
+                      min_models: int = AUTOFIX_MIN_MODELS) -> tuple[float, list[str]] | None:
+    """Consensus of the double-check models for one sung note.
+
+    ``check_pitches`` maps each double-check model to its pitch for the note, already
+    octave-folded next to ``main_pitch``.  Returns ``(consensus_pitch, agreeing_models)``
+    when all of these hold:
+
+      * at least ``min_models`` check models are configured,
+      * at least ``min_models`` of them agree with each other within ``agree_tol``
+        semitones (the largest such group wins; ties go to the lower-pitched group),
+      * their median (the consensus) differs from ``main_pitch`` by at least ``min_off``
+        semitones.
+
+    Otherwise returns ``None``: the main pitch stands and the caller keeps the plain
+    disagreement issue.  The corrected pitch is the consensus rounded to the nearest
+    semitone (done by the caller).
+    """
+    if len(check_pitches) < min_models:
+        return None
+    items = sorted(check_pitches.items(), key=lambda kv: kv[1])
+    vals = [v for _, v in items]
+    lo = 0
+    best_lo, best_hi, best_n = 0, 0, 1
+    for hi in range(len(vals)):
+        while vals[hi] - vals[lo] > agree_tol:  # window [lo..hi] within agree_tol of each other
+            lo += 1
+        if hi - lo + 1 > best_n:
+            best_lo, best_hi, best_n = lo, hi, hi - lo + 1
+    if best_n < min_models:
+        return None
+    group = items[best_lo:best_hi + 1]
+    consensus = float(statistics.median([v for _, v in group]))
+    if abs(consensus - main_pitch) < min_off:
+        return None
+    return consensus, [m for m, _ in group]
+
+
+def autofix_issue(s, models: list[str], old_pitch: int, new_pitch: int, main_name: str,
+                  risk: float = 0.25) -> dict:
+    """Sidecar entry for a note whose pitch was auto-corrected by the check consensus
+    (kind ``auto-fixed``; ``s`` is the generate.Syllable, duck-typed)."""
+    return {"kind": "auto-fixed", "line": s.line, "start": round(s.start, 3), "end": round(s.end, 3),
+            "risk": round(risk, 3), "text": s.text.strip(), "models": list(models),
+            "old_pitch": old_pitch, "new_pitch": new_pitch,
+            "reasons": [f"pitch auto-corrected to the consensus of {', '.join(models)}: "
+                        f"{old_pitch} -> {new_pitch} MIDI ({main_name} said {old_pitch})"]}

@@ -112,7 +112,8 @@ def m1_generator(case: SongCase, separation: str | None = None) -> Song:
 
     if case.audio is None:
         raise FileNotFoundError("no audio")
-    sep = separation or os.environ.get("ULTRAAI_SEPARATION", DEFAULT_SEPARATION)
+    from .. import config
+    sep = separation or config.get("separation")
     lyrics = prepare(case.lyrics, language_code(case.metadata.get("LANGUAGE")))
     song, _ = generate(case.audio, lyrics, case.metadata, separation=sep)
     return song
@@ -142,7 +143,8 @@ def m2_generator(case: SongCase) -> Song:
         for ln in lrc.lines:
             ln.text = greeklish(ln.text)
         lrc.plain = [greeklish(t) for t in lrc.plain]
-    sep = os.environ.get("ULTRAAI_SEPARATION", DEFAULT_SEPARATION)
+    from .. import config
+    sep = config.get("separation")
     song, info = generate_from_lrc(case.audio, lrc, language_code(case.metadata.get("LANGUAGE")),
                                    case.metadata, separation=sep)
     print(f"   [{case.name[:30]}] lrc {lrc.duration:.0f}s synced={info['lrc_synced']} "
@@ -175,7 +177,8 @@ def m3_generator(case: SongCase) -> Song:
             for ln in c.lines:
                 ln.text = greeklish(ln.text)
             c.plain = [greeklish(t) for t in c.plain]
-    sep = os.environ.get("ULTRAAI_SEPARATION", DEFAULT_SEPARATION)
+    from .. import config
+    sep = config.get("separation")
     song, info = generate_sung(case.audio, cands, language_code(case.metadata.get("LANGUAGE")),
                                case.metadata, separation=sep)
     song.generation_info = info  # for scripts that keep the sidecar (issues, features)

@@ -8,15 +8,15 @@ picker shows it first because 3 songs can mislead.  Songs whose reference file i
 against the audio are left out (scripts/compare_runs.ref_shifted).
 """
 import json
-import statistics as st
 import math
+import statistics as st
 import sys
 from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ultraai.models import BENCH_FILE, LEAD_FILES  # noqa: E402
 from scripts.compare_runs import ref_shifted  # noqa: E402
+from ultraai.models import BENCH_FILE, LEAD_FILES  # noqa: E402
 
 KEYS = {"timing": "onset_within_250ms", "timing_100": "onset_rel_within_100ms", "words": "word_recall",
         "pitch": "pitch_class_acc", "pitch_1": "pitch_class_acc_1"}
@@ -76,6 +76,10 @@ def main(out="out/bench", depth="out/bench-depth"):
         stats = {k: round(100 * st.mean(r["metrics"].get(m, 0) for r in rs.values()), 1) for k, m in KEYS.items()}
         stats["min_per_song"] = round(st.mean(r["seconds"] for r in rs.values()) / 60, 1)
         stats["score"] = round(stats["timing"] + 0.5 * stats["pitch"], 2)  # ordering in the picker
+        stage_rows = [r["stages"] for r in rs.values() if "stages" in r]
+        if stage_rows:
+            stats["stages"] = {n: round(st.mean(s[n] for s in stage_rows if n in s), 1)
+                               for n in sorted({k for s in stage_rows for k in s})}
         res[group][key] = stats
     # the baseline run (HTDemucs + SwiftF0, no backing-vocal removal) is the "pitch:swift" config
     if "swift" in res["pitch"]:

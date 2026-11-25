@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import importlib.util
 import re
 import tempfile
 from pathlib import Path
 
 import logging
 
-from .store import Library, SongState
+from .store import Library, SongState, youtube_id
 
 log = logging.getLogger("ultraai.import")
 
@@ -51,13 +52,64 @@ def import_file(lib: Library, path: Path, original_name: str | None = None, move
     return lib.state(st.id)
 
 
-def youtube_info(url: str) -> dict:
+_impersonate_warned = False
+
+
+def _cookies_from(settings) -> str | None:
+    """The cookies path from the Studio settings (dialog), or None -> env fallback.
+
+    A settings value that is unset, empty or missing falls back to ULTRAAI_COOKIES.
+    """
+    return (str(getattr(settings, "cookies", "") or "")).strip() or None
+
+
+def _impersonation_available(target: str) -> bool:
+    """Whether yt-dlp can really impersonate: curl_cffi is what it does TLS with.
+
+    curl_cffi is a [worker] extra, so the base (Studio) install may not have it;
+    passing ``impersonate`` to YoutubeDL then fails for every YouTube request.
+    Same rule as ytsubs._impersonation_available() (duplicated here: importing
+    ytsubs would pull in numpy via audio.py).  Warns once per process when
+    impersonation was requested but is not possible."""
+    global _impersonate_warned
+    if importlib.util.find_spec("curl_cffi") is not None:
+        return True
+    if not _impersonate_warned:
+        _impersonate_warned = True
+        log.warning("ULTRAAI_YT_IMPERSONATE=%s is set but curl_cffi is not installed; "
+                    "YouTube requests run without browser impersonation "
+                    "(pip install curl_cffi)", target)
+    return False
+
+
+def _cookie_opts(cookies: str | None = None) -> dict:
+    """yt-dlp options: ``cookiefile`` for an explicit cookies.txt path or, when
+    ``None``, ULTRAAI_COOKIES — each only when it names an existing file — and
+    ``impersonate`` from ULTRAAI_YT_IMPERSONATE (lifts most YouTube 429s; only when
+    curl_cffi is installed).
+
+    Same rule as ytsubs._ytdlp_extra() (duplicated here: importing ytsubs would
+    pull in numpy via audio.py).  Only the path is passed on — the file is a secret.
+    """
+    from .. import config
+
+    opts: dict = {}
+    path = (cookies if cookies is not None else config.get("cookies")).strip()
+    if path and Path(path).is_file():
+        opts["cookiefile"] = path
+    target = config.get("yt_impersonate").strip()
+    if target and _impersonation_available(target):
+        opts["impersonate"] = target  # dropped when curl_cffi is missing (yt_dlp default is None)
+    return opts
+
+
+def youtube_info(url: str, cookies: str | None = None) -> dict:
     import yt_dlp
 
     from .logs import YtdlpLogger
 
     with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "skip_download": True,
-                           "logger": YtdlpLogger()}) as y:
+                           "logger": YtdlpLogger(), **_cookie_opts(cookies)}) as y:
         return y.extract_info(url, download=False)
 
 
@@ -75,13 +127,14 @@ def video_format(quality: str) -> str | None:
     return f"bestvideo[vcodec^=avc1]{cap}/bestvideo[ext=mp4]{cap}/bestvideo{cap}"
 
 
-def _download(url: str, fmt: str, dest: Path, hook=None) -> Path:
+def _download(url: str, fmt: str, dest: Path, hook=None, cookies: str | None = None) -> Path:
     import yt_dlp
 
     from .logs import YtdlpLogger
 
     opts = {"quiet": True, "noplaylist": True, "format": fmt, "outtmpl": str(dest / "dl.%(ext)s"),
-            "progress_hooks": [hook] if hook else [], "logger": YtdlpLogger(), "verbose": True}
+            "progress_hooks": [hook] if hook else [], "logger": YtdlpLogger(), "verbose": True,
+            **_cookie_opts(cookies)}
     with yt_dlp.YoutubeDL(opts) as y:
         y.download([url])
     return next(p for p in dest.iterdir() if p.name.startswith("dl."))
@@ -129,13 +182,13 @@ def fetch_extras(lib: Library, sid: str, settings, info: dict | None = None, pro
     st = lib.state(sid)
     if not st.source.startswith(("http://", "https://")):
         return []
-    info = info or youtube_info(st.source)
+    info = info or youtube_info(st.source, _cookies_from(settings))
     got = []
     fmt = video_format(getattr(settings, "youtube_video", "none"))
     if fmt and not st.video:
         progress and progress("downloading video")
         with tempfile.TemporaryDirectory() as tmp:
-            f = _download(st.source, fmt, Path(tmp), _hook(progress, "video"))
+            f = _download(st.source, fmt, Path(tmp), _hook(progress, "video"), _cookies_from(settings))
             got.append(lib.add_media(sid, f, "VD", "video"))
     if getattr(settings, "youtube_cover", False) and not st.cover and (cu := _cover_url(info)):
         with tempfile.TemporaryDirectory() as tmp:
@@ -161,8 +214,9 @@ def import_youtube(lib: Library, url: str, progress=None, settings=None, options
     st = lib.create("", url, source=url, state="downloading")
     if options:
         lib.update(st.id, options=options)
+    ck = _cookies_from(settings)
     try:
-        info = youtube_info(url)
+        info = youtube_info(url, ck)
         artist = info.get("artist") or info.get("creator") or ""
         title = info.get("track") or ""
         if not (artist and title):
@@ -173,10 +227,14 @@ def import_youtube(lib: Library, url: str, progress=None, settings=None, options
 
         fmt = AUDIO_FORMATS.get(getattr(settings, "youtube_audio", "m4a"), AUDIO_FORMATS["m4a"])
         with tempfile.TemporaryDirectory() as tmp:
-            got = _download(url, fmt, Path(tmp), _hook(progress, "audio"))
+            got = _download(url, fmt, Path(tmp), _hook(progress, "audio"), ck)
             got = remux_audio(got)
-            lib.add_audio(st.id, got, move=True)
-            log.info("downloaded %s - %s: %s", artist, title, got.suffix)
+            audio_name = lib.add_audio(st.id, got, move=True)
+            ytid = youtube_id(url) or str(info.get("id") or "")
+            if re.fullmatch(r"[A-Za-z0-9_-]{11}", ytid):  # <audio-stem>.ytid next to the audio
+                (lib.folder(st.id) / (Path(audio_name).stem + ".ytid")).write_text(
+                    ytid + "\n", encoding="utf-8")
+            log.info("downloaded %s - %s: %s (video id %s)", artist, title, got.suffix, ytid or "?")
         # the song can be processed while the video downloads
         lib.update(st.id, state="queued", stage="")
         if settings is not None:

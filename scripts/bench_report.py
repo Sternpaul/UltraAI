@@ -7,6 +7,7 @@ from pathlib import Path
 
 KEYS = [("onset_within_250ms", "timing 250ms"), ("onset_rel_within_100ms", "timing rel 100ms"),
         ("word_recall", "words"), ("pitch_class_acc", "pitch"), ("pitch_class_acc_1", "pitch ±1")]
+STAGES = [("separate", "sep"), ("analyse", "ana"), ("listen", "listen"), ("align", "align"), ("notes", "notes")]
 
 
 def main(out="out/bench"):
@@ -16,12 +17,15 @@ def main(out="out/bench"):
     for r in rows:
         if "metrics" in r:
             by[r["config"]][r["song"]] = r
-    print(f"{'config':58}" + "".join(f"{lbl:>17}" for _, lbl in KEYS) + "   min/song")
+    print(f"{'config':58}" + "".join(f"{lbl:>17}" for _, lbl in KEYS) + "   min/song"
+          + "".join(f"{lbl:>8}" for _, lbl in STAGES))
     for cfg, rs in by.items():
         mark = "" if len(rs) == len(songs) else f" ({len(rs)}/{len(songs)} songs)"
         vals = [100 * st.mean(r["metrics"].get(k, 0) for r in rs.values()) for k, _ in KEYS]
         secs = st.mean(r["seconds"] for r in rs.values()) / 60
-        print(f"{(cfg + mark)[:58]:58}" + "".join(f"{v:17.1f}" for v in vals) + f"   {secs:8.1f}")
+        stage_vals = {k: [r["stages"][k] for r in rs.values() if k in r.get("stages", {})] for k, _ in STAGES}
+        stages = "".join(f"{st.mean(v):8.1f}" if v else f"{'-':>8}" for v in stage_vals.values())
+        print(f"{(cfg + mark)[:58]:58}" + "".join(f"{v:17.1f}" for v in vals) + f"   {secs:8.1f}" + stages)
     errs = [r for r in rows if "error" in r]
     for r in errs:
         print("ERROR", r["config"], r["song"][:30], r["error"][:100])

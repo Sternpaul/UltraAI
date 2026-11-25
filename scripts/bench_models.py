@@ -68,12 +68,15 @@ def main(out="out/bench"):
                 continue
             for k, v in {**BASE, **env}.items():
                 os.environ[k] = v
+            os.environ["ULTRAAI_STAGE_TIMING"] = "1"  # per-stage timings into each row
             for k in ("ULTRAAI_LEAD",):
                 if k not in env:
                     os.environ.pop(k, None)
+            from ultraai import generate
             from ultraai.eval.harness import GENERATORS, load_cases
             from ultraai.eval.metrics import compare
 
+            generate.reset_stage_times()
             case = next(c for c in load_cases("library") if c.name == song)
             t0 = time.time()
             row = {"config": name, "kind": kind, "song": song}
@@ -85,6 +88,7 @@ def main(out="out/bench"):
             except Exception as exc:  # noqa: BLE001
                 row["error"] = f"{type(exc).__name__}: {exc}"
             row["seconds"] = round(time.time() - t0)
+            row["stages"] = {k: round(v, 1) for k, v in generate.STAGE_TIMES.items()}
             with open(res, "a") as f:
                 f.write(json.dumps(row) + "\n")
             m = row.get("metrics", {})

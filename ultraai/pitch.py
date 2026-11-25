@@ -17,6 +17,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from . import config
+
 FMIN, FMAX = 65.0, 1100.0   # C2 .. C#6: covers sung vocals incl. falsetto
 
 
@@ -62,7 +64,7 @@ def _loudness(wave16k: np.ndarray, times: np.ndarray, win: int = 1024) -> np.nda
 
 def track(wave16k: np.ndarray, model: str = "swift") -> PitchTrack:
     if model in ("crepe", "crepe-tiny", "crepe-full"):
-        return _track_crepe(wave16k, "full" if model == "crepe-full" else CREPE_SIZE)
+        return _track_crepe(wave16k, "full" if model == "crepe-full" else config.get("crepe"))
     if model == "pesto":
         return _track_pesto(wave16k)
     if model == "rmvpe":
@@ -84,9 +86,6 @@ def track(wave16k: np.ndarray, model: str = "swift") -> PitchTrack:
 
 
 HOP_S = 0.01
-CREPE_SIZE = __import__("os").environ.get("ULTRAAI_CREPE", "tiny")  # "full" is ~10x slower on CPU
-
-
 def _to_track(wave16k, times, hz, conf) -> PitchTrack:
     hz = np.asarray(hz, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):

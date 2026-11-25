@@ -1,0 +1,319 @@
+"""YouTube subtitles (manual preferred over auto) as a timed-lyrics source, cached.
+
+``fetch_subs`` runs yt-dlp once per video (json3 subtitle format) and caches the raw
+json3 dict at ``CACHE_DIR/yt/<ytid>.json`` (atomic tmp+replace, like lrc.py's cache
+layout).  ``sub_segments``/``sub_lines`` parse the cached json3 into word/line views,
+and ``word_agreement`` scores how well a Whisper transcript matches the subtitles.
+``resolve_ytid`` maps an "ARTIST - TITLE" query to a video id (ytsearch1), cached too.
+
+All public functions never raise: any failure (no yt-dlp, no network, no subs,
+corrupt cache) yields ``None`` / ``[]`` / ``0.0``.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import logging
+import math
+import os
+import random
+import re
+import subprocess
+import tempfile
+import time
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+
+from . import config
+from .audio import CACHE_DIR
+from .lyrics import clean_lines
+
+log = logging.getLogger("ultraai.ytsubs")
+
+YT_URL = "https://www.youtube.com/watch?v={ytid}"
+
+# --sub-langs value: manual languages first; auto captions only fill languages
+# without a manual track (that per-language preference is yt-dlp's own).
+SUB_LANGS = ["en", "en-US", "en-GB", "de", "el"]
+
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW, as in studio/importer.py
+
+
+@dataclass
+class SubWord:
+    start: float   # seconds
+    end: float     # seconds
+    text: str
+
+
+@dataclass
+class SubSegment:
+    start: float          # seconds (event tStartMs)
+    end: float            # seconds (event tStartMs + dDurationMs)
+    text: str             # words joined with single spaces
+    words: list[SubWord]
+
+
+def _run(cmd: list[str]) -> str:
+    """Run a command and return its stdout; raises RuntimeError on non-zero exit.
+
+    The single subprocess choke point: tests monkeypatch this, no real network.
+    """
+    r = subprocess.run(cmd, capture_output=True, text=True, creationflags=_NO_WINDOW)
+    if r.returncode != 0:
+        raise RuntimeError(f"{cmd[0]} failed (rc={r.returncode}): {r.stderr.strip()[-300:]}")
+    return r.stdout
+
+
+_sleep = time.sleep  # injectable for tests
+
+_MAX_ATTEMPTS = 3
+_BACKOFF_S = (5.0, 20.0)  # backoff between 429 retries (+ jitter), one entry per sleep
+
+_impersonate_warned = False
+
+
+def _impersonation_available(target: str) -> bool:
+    """Whether yt-dlp can really impersonate: curl_cffi is what it does TLS with.
+
+    curl_cffi is a [worker] extra, so it may be missing (Studio-only installs, CI);
+    without the guard every yt-dlp run fails on ``--impersonate``.  Warns once per
+    process when impersonation was requested but is not possible."""
+    global _impersonate_warned
+    if importlib.util.find_spec("curl_cffi") is not None:
+        return True
+    if not _impersonate_warned:
+        _impersonate_warned = True
+        log.warning("ULTRAAI_YT_IMPERSONATE=%s is set but curl_cffi is not installed; "
+                    "yt-dlp runs without browser impersonation (pip install curl_cffi)", target)
+    return False
+
+
+def _ytdlp_extra() -> list[str]:
+    """Extra yt-dlp CLI args from config: ``--impersonate <target>`` (ULTRAAI_YT_IMPERSONATE,
+    only when curl_cffi is installed), ``--sleep-subtitles <s>`` (ULTRAAI_YT_SLEEP_SUBS,
+    YouTube restricts auto-subs for sessions younger than ~60 s) and ``--cookies <path>``
+    when ULTRAAI_COOKIES names an existing file.  Only the path is ever passed on —
+    the cookies file is a secret and its contents are never logged, printed or committed."""
+    args: list[str] = []
+    target = config.get("yt_impersonate").strip()
+    if target and _impersonation_available(target):
+        args += ["--impersonate", target]
+    try:
+        sleep_s = float(config.get("yt_sleep_subs") or 0)
+    except ValueError:
+        sleep_s = 0.0
+    if not (math.isfinite(sleep_s) and 0 < sleep_s < 1e6):
+        sleep_s = 0.0  # inf/nan/out-of-range: same as an unparseable value
+    if sleep_s > 0:
+        args += ["--sleep-subtitles", str(int(sleep_s))]
+    path = config.get("cookies").strip()
+    if path and Path(path).is_file():
+        args += ["--cookies", path]
+    return args
+
+
+_429_RE = re.compile(r"http error 429|http 429|too many requests|rate[- ]?limit", re.I)
+
+
+def _looks_429(text: str) -> bool:
+    """Actual rate-limit signatures, not any '429' substring: a video id printed by
+    --print id can contain '429' without anything being rate-limited."""
+    return bool(_429_RE.search(text or ""))
+
+
+def _run_ytdlp(cmd: list[str]) -> str | None:
+    """``_run`` with 429 resilience: up to 3 attempts, backoff 5s/20s + jitter.
+
+    A 429 in the output or in the failure message is retried; after the last attempt a
+    warning points at ULTRAAI_COOKIES and None is returned.  Any other failure
+    re-raises (callers already turn that into None)."""
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            out = _run(cmd)
+            if not _looks_429(out):
+                return out
+        except RuntimeError as exc:
+            if not _looks_429(str(exc)):
+                if "impersonate" in str(exc).lower():
+                    log.warning("yt-dlp failed on --impersonate (%s); check "
+                                "ULTRAAI_YT_IMPERSONATE (needs curl_cffi)",
+                                str(exc).strip()[-200:])
+                raise
+        if attempt + 1 < _MAX_ATTEMPTS:
+            delay = _BACKOFF_S[attempt] + random.uniform(0.0, 1.0)
+            log.warning("YouTube rate-limited (429), retrying in %.0f s (attempt %d/%d)",
+                        delay, attempt + 2, _MAX_ATTEMPTS)
+            _sleep(delay)
+    log.warning("YouTube rate-limited (429); check ULTRAAI_YT_IMPERSONATE (needs curl_cffi), "
+                "ULTRAAI_YT_SLEEP_SUBS and ULTRAAI_COOKIES")
+    return None
+
+
+def _cache_write(cache: Path, data) -> None:
+    """Atomic cache write: tmp file in the same dir, then replace (lrc.py's layout style)."""
+    tmp = cache.with_name(cache.name + ".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    tmp.replace(cache)
+
+
+def _pick_sub_file(tmp: Path) -> Path | None:
+    """Choose the json3 file to keep: the language that comes first in SUB_LANGS.
+
+    yt-dlp writes the manual and the auto track of the same language to the same
+    file name (no ``.auto.`` marker), preferring the manual track itself, so what
+    is left to pick here is the language."""
+    def key(f: Path):
+        lang = f.name[len("sub."):-len(".json3")] if f.name.startswith("sub.") else f.stem
+        try:
+            order = SUB_LANGS.index(lang)
+        except ValueError:
+            order = len(SUB_LANGS)
+        return (order, f.name)
+
+    files = sorted(tmp.glob("*.json3"))
+    return sorted(files, key=key)[0] if files else None
+
+
+def fetch_subs(ytid: str, manual: bool = True) -> dict | None:
+    """Raw json3 subtitle dict ({"events": [...]}) for a YouTube video, cached at
+    CACHE_DIR/yt/<ytid>.json.  Runs yt-dlp with --write-subs (when ``manual``) and
+    --write-auto-subs, --sub-format json3, --sub-langs <SUB_LANGS>; yt-dlp itself
+    prefers a manual track over the auto caption of the same language.  Returns
+    None on any failure (never raises)."""
+    try:
+        cache_dir = CACHE_DIR / "yt"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache = cache_dir / f"{ytid}.json"
+        if cache.exists():
+            try:
+                return json.loads(cache.read_text(encoding="utf-8"))
+            except Exception:
+                pass  # corrupt cache: refetch
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = ["yt-dlp", "--skip-download", "--sleep-requests", "1", "--sub-format", "json3",
+                   "--sub-langs", ",".join(SUB_LANGS), *_ytdlp_extra()]
+            if manual:
+                cmd.append("--write-subs")
+            cmd += ["--write-auto-subs", "-o", str(Path(tmp) / "sub.%(ext)s"),
+                    YT_URL.format(ytid=ytid)]
+            if _run_ytdlp(cmd) is None:
+                return None
+            sub = _pick_sub_file(Path(tmp))
+            if sub is None:
+                return None
+            data = json.loads(sub.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not isinstance(data.get("events"), list):
+            return None
+        _cache_write(cache, data)
+        return data
+    except Exception:
+        return None
+
+
+def _is_music_event(text: str) -> bool:
+    """A pure '[Music]'-style event: after removing bracketed tags, no word chars left."""
+    stripped = re.sub(r"[\[\(][^\]\)]*[\]\)]", "", text)
+    return not re.search(r"\w", stripped)
+
+
+def sub_segments(ytid: str) -> list[SubSegment]:
+    """Parsed segments from the cached json3: one per event with segs, times in
+    seconds (json3 ms / 1000).  Pure '[Music]'-style events and empty words dropped."""
+    data = fetch_subs(ytid)
+    if not data:
+        return []
+    out: list[SubSegment] = []
+    for ev in data.get("events") or []:
+        if not isinstance(ev, dict):
+            continue
+        base_ms = ev.get("tStartMs") or 0
+        dur_ms = ev.get("dDurationMs") or 0
+        words: list[SubWord] = []
+        offset = 0
+        for seg in ev.get("segs") or []:
+            text = (seg.get("utf8") or "").strip()
+            seg_dur = seg.get("dDurationMs", seg.get("durationMs")) or 0
+            if not text:
+                offset += seg_dur
+                continue
+            t = seg.get("tStartMs")
+            start = (t if t is not None else base_ms + offset) / 1000.0
+            offset += seg_dur
+            words.append(SubWord(start, start + seg_dur / 1000.0, text))
+        text = " ".join(w.text for w in words)
+        if not words or _is_music_event(text):
+            continue
+        out.append(SubSegment(base_ms / 1000.0, (base_ms + dur_ms) / 1000.0, text, words))
+    return out
+
+
+def sub_lines(ytid: str) -> tuple[list[str], list[float]]:
+    """(line texts, line start seconds).  Line text = the segment's words joined,
+    cleaned with lyrics.clean_lines (applied per line so times stay aligned);
+    line start = first word start of the segment."""
+    lines: list[str] = []
+    times: list[float] = []
+    for seg in sub_segments(ytid):
+        if not seg.words:
+            continue
+        text = " ".join(w.text for w in seg.words)
+        for cleaned in clean_lines([text]):
+            lines.append(cleaned)
+            times.append(seg.words[0].start)
+    return lines, times
+
+
+def _word_text(w) -> str:
+    """AsrWord has .text; plain (start, end, text) tuples use index 2."""
+    return w.text if hasattr(w, "text") else w[2]
+
+
+def _tokens(text: str) -> list[str]:
+    """Normalized tokens: lowercase, punctuation stripped."""
+    return re.sub(r"[^\w\s]", "", text.lower()).split()
+
+
+def word_agreement(asr_words: list, sub_words: list[SubWord]) -> float:
+    """Normalized-token agreement between two transcripts, 0..1 (pure function, no I/O).
+
+    Tokens are normalized (lowercase, punctuation stripped).  With A = the asr token
+    multiset and B = the sub token multiset, agreement = |A ∩ B| / |A ∪ B| (multiset
+    intersection over union, i.e. sum of per-token min over sum of per-token max).
+    1.0 = identical token multisets, 0.0 = disjoint.  ``asr_words`` may be AsrWord
+    objects or (start, end, text) tuples.
+    """
+    a = Counter(t for w in asr_words for t in _tokens(_word_text(w)))
+    b = Counter(t for w in sub_words for t in _tokens(w.text))
+    union = sum((a | b).values())
+    if not union:
+        return 0.0
+    return sum((a & b).values()) / union
+
+
+def resolve_ytid(query: str) -> str | None:
+    """Resolve an 'ARTIST - TITLE' query to a YouTube video id via yt-dlp
+    'ytsearch1:<query>' --skip-download --print id; cached under CACHE_DIR/yt/.
+    Returns the id or None; never raises."""
+    try:
+        cache_dir = CACHE_DIR / "yt"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        name = re.sub(r"[^\w]+", "_", query.strip())[:120].strip("_") or "empty"
+        cache = cache_dir / f"search_{name}.txt"
+        if cache.exists():
+            return cache.read_text(encoding="utf-8").strip() or None
+        out = _run_ytdlp(["yt-dlp", "--skip-download", "--sleep-requests", "1", *_ytdlp_extra(),
+                          "--print", "id", f"ytsearch1:{query}"])
+        if out is None:
+            return None
+        ytid = out.strip().splitlines()[-1].strip() if out.strip() else ""
+        if not ytid:
+            return None
+        tmp = cache.with_name(cache.name + ".tmp")
+        tmp.write_text(ytid, encoding="utf-8")
+        tmp.replace(cache)
+        return ytid
+    except Exception:
+        return None

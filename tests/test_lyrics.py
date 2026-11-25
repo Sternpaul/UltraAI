@@ -7,6 +7,16 @@ def test_romanize():
     assert romanize("Straße!") == "strasse"
 
 
+def test_greeklish_is_the_one_canonical_function():
+    from ultraai import batch
+    from ultraai.lyrics import greeklish
+
+    assert batch.greeklish is greeklish  # batch imports lyrics' function, no second copy
+    sample = "Πού πας ρε Χαράλαμπε"
+    assert greeklish(sample) == "Pou pas re Charalabe"  # μπ -> b (digraph), χ -> Ch
+    assert batch.greeklish(sample) == greeklish(sample)
+
+
 def test_clean_lines():
     assert clean_lines("[Chorus]\nHey (x2)\n\n[Verse: A] Yo") == ["Hey", "Hey", "Yo"]
 

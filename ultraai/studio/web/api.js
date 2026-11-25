@@ -1,10 +1,18 @@
-// Small client for the Studio backend.  Mutating requests carry the X-UltraAI header.
+// Small client for the Studio backend.  Mutating requests carry the per-install token
+// (injected into index.html as a meta tag) in the x-ultraai header.
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  constructor(msg, status) {
+    super(msg);
+    this.status = status;
+  }
+}
+
+const TOKEN = document.querySelector('meta[name="ultraai-token"]')?.content || "";
 
 export async function api(path, { method = "GET", json, form } = {}) {
   const opts = { method, headers: {} };
-  if (method !== "GET") opts.headers["X-UltraAI"] = "1";
+  if (method !== "GET") opts.headers["x-ultraai"] = TOKEN;
   if (json !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(json);
@@ -16,7 +24,7 @@ export async function api(path, { method = "GET", json, form } = {}) {
   const body = isJson ? await r.json() : await r.text();
   if (!r.ok) {
     const msg = isJson ? (body.detail ?? JSON.stringify(body)) : body;
-    throw new ApiError(typeof msg === "string" ? msg : JSON.stringify(msg));
+    throw new ApiError(typeof msg === "string" ? msg : JSON.stringify(msg), r.status);
   }
   return body;
 }
@@ -47,10 +55,13 @@ export function h(tag, props = {}, ...children) {
   return el;
 }
 
-/** "LRCLIB · Kingfishr – The Blade · synced · version 1 of 3" */
+/** "LRCLIB · Kingfishr – The Blade · synced · version 1 of 3"
+ *  YouTube-caption sources get an explicit warning: measured unreliable as lyric
+ *  text (word_recall −60.8 vs hand-made references), so the user should review. */
 export function lyricsLabel(li, fallback = "") {
   if (!li || !li.source) return fallback ? `lyrics: ${fallback}` : "";
   if (li.source === "user") return "lyrics: yours";
+  if (li.source === "yt") return "lyrics: YouTube captions ⚠ last resort — often inaccurate, please review";
   const parts = [`lyrics: ${li.source}`];
   if (li.artist || li.title) parts.push(`${li.artist} – ${li.title}`);
   parts.push(li.synced ? "synced" : "not synced");

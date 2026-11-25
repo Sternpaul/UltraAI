@@ -27,11 +27,17 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .config import atomic_write, quarantine
+
 log = logging.getLogger("ultraai.library")
 
 AUDIO_EXT = {".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wav", ".aac", ".webm"}
 STATES = ("downloading", "queued", "processing", "needs_lyrics", "needs_review", "reviewed",
           "imported", "error")
+
+
+class VersionConflict(Exception):
+    """PUT /doc with a stale base_version: the doc changed on the server in between."""
 
 
 def safe_name(text: str) -> str:
@@ -61,6 +67,7 @@ class SongState:
     progress: dict = field(default_factory=dict)  # live processing steps / ETA from the processor
     video: str = ""                     # file name of the music video (USDX #VIDEO), if any
     cover: str = ""                     # cover image (USDX #COVER), if any
+    doc_version: int = 0                # bumped on every doc save and reprocess (optimistic locking)
 
     @classmethod
     def from_dict(cls, d: dict) -> "SongState":
@@ -82,16 +89,18 @@ class Library:
             idx = {}
             for folder in sorted(p for p in self.root.iterdir() if p.is_dir() and not p.name.startswith(".")):
                 st_file = folder / ".studio" / "song.json"
+                sid = None
                 if st_file.exists():
                     try:
                         sid = json.loads(st_file.read_text(encoding="utf-8"))["id"]
-                    except (ValueError, KeyError, OSError):
-                        continue
-                elif any(folder.glob("*.txt")):
+                    except (ValueError, KeyError, TypeError, OSError) as exc:
+                        log.warning("song state %s was corrupt (%s); quarantined", st_file, exc)
+                        quarantine(st_file)
+                        sid = None
+                if sid is None and any(folder.glob("*.txt")):
                     sid = "x" + uuid.uuid5(uuid.NAMESPACE_URL, folder.name).hex[:11]
-                else:
-                    continue
-                idx[sid] = folder
+                if sid is not None:
+                    idx[sid] = folder
             self._index = idx
             return dict(idx)
 
@@ -107,7 +116,11 @@ class Library:
         folder = self.folder(sid)
         f = folder / ".studio" / "song.json"
         if f.exists():
-            return SongState.from_dict(json.loads(f.read_text(encoding="utf-8")))
+            try:
+                return SongState.from_dict(json.loads(f.read_text(encoding="utf-8")))
+            except (ValueError, TypeError, KeyError, OSError) as exc:
+                log.warning("song state %s was corrupt (%s); quarantined, using defaults", f, exc)
+                quarantine(f)
         # a song that was already in the library (made elsewhere)
         txt = self.txt_path(sid)
         artist, title = _split_name(folder.name)
@@ -269,12 +282,28 @@ class Library:
 
     # ---- versions ------------------------------------------------------------------
     def save_version(self, sid: str, txt_text: str, what: str) -> Path:
-        d = self.studio_dir(sid) / "versions"
-        d.mkdir(exist_ok=True)
-        n = len(list(d.glob("*.txt")))
-        p = d / f"{n:03d}-{safe_name(what)}.txt"
-        p.write_text(txt_text, encoding="utf-8")
-        return p
+        """Append a version file, numbered max(existing)+1 under the library lock (a crash
+        or a deleted file must never make two versions share a number); written atomically."""
+        with self._lock:
+            d = self.studio_dir(sid) / "versions"
+            d.mkdir(exist_ok=True)
+            nums = [int(p.name.split("-", 1)[0]) for p in d.glob("*.txt")
+                    if p.name.split("-", 1)[0].isdigit()]
+            n = max(nums, default=-1) + 1
+            p = d / f"{n:03d}-{safe_name(what)}.txt"
+            atomic_write(p, txt_text.encode("utf-8"))
+            return p
+
+    def bump_doc_version(self, sid: str, base: int) -> SongState:
+        """Optimistic concurrency for PUT /doc: atomically require doc_version == base and
+        bump it; raises VersionConflict when the doc changed on the server in between."""
+        with self._lock:
+            st = self.state(sid)
+            if st.doc_version != base:
+                raise VersionConflict(f"doc_version {st.doc_version} != base {base}")
+            st.doc_version = base + 1
+            self.save_state(st)
+            return st
 
     def versions(self, sid: str) -> list[dict]:
         d = self.studio_dir(sid) / "versions"
@@ -287,18 +316,47 @@ def youtube_id(url: str) -> str | None:
     return m.group(1) if m else None
 
 
+def youtube_cover_url(yt: str) -> str:
+    """The cover of the YouTube video itself — the thumbnail USDB Syncer can download."""
+    return f"https://img.youtube.com/vi/{yt}/hqdefault.jpg"
+
+
 def usdb_text(txt_text: str, source: str) -> str:
-    """The song as USDB expects it: #VIDEO carries the meta tags (v=<YouTube id>) that
-    USDB Syncer uses to fetch audio and video; local-only lines are left out."""
+    """The song as USDB expects it. USDB hosts only the txt, so every media file must be a
+    link, and the links live inside #VIDEO as USDB Syncer meta tags — a comma-separated
+    list of key=value pairs: v=<YouTube id> for audio/video, co=<cover url> for the cover
+    (the thumbnail of that same video, unless the txt already links one), plus whatever
+    the txt already had (preview=…, medley=…, …). USDB Syncer rewrites the downloaded txt
+    to local file names; local-only lines are left out here."""
     from ..ultrastar.reader import parse
     from ..ultrastar.writer import dumps
 
     song = parse(txt_text)
     yt = youtube_id(source) or youtube_id(song.get("VIDEOURL") or "") or youtube_id(song.get("AUDIOURL") or "")
+    cover = song.get("COVERURL") or (youtube_cover_url(yt) if yt else None)
+    old_video = song.get("VIDEO") or ""
     for k in ("VIDEO", "VIDEOGAP", "AUDIOURL", "VIDEOURL", "COVERURL", "BACKGROUNDURL"):
         song.set(k, None)
+    # keep existing meta tags, then make sure v= and co= are set
+    params: dict[str, str] = {}
+    order: list[str] = []
+    for part in old_video.split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            if k not in params:
+                params[k] = v
+                order.append(k)
     if yt:
-        song.set("VIDEO", f"v={yt}")
+        params["v"] = yt
+        if "v" not in order:
+            order.insert(0, "v")
+    if cover and "co" not in params:
+        params["co"] = cover
+        order.append("co")
+    if order:
+        song.set("VIDEO", ",".join(f"{k}={params[k]}" for k in order))
+    if cover:
+        song.set("COVER", None)  # a local file name is meaningless on USDB
     return dumps(song)
 
 
