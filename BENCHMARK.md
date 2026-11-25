@@ -122,6 +122,49 @@ song byproducts (.lrc/.ass/#PREVIEWSTART), #VIDEOGAP/key-snap — all **0.0 delt
 Onset-snapping to spectral-flux peaks was tested in 7 variants and **closed**: it adds
 jitter (timing-rel −1.0) without improving timing. Details on the pull requests.
 
+## Ceiling analysis: where are the remaining points lost? (184 library songs, merged code)
+
+`scripts/ceiling.py` (results in `out/analysis/ceiling.txt`). Pitch is frame-wise pitch class
+like `pitch_class_acc`, all three on the same frames (reference note + confident pitch curve +
+our note):
+
+| | exact | ±1 semitone |
+|---|---|---|
+| raw pitch curve (HTDemucs + SwiftF0) vs reference | 65.7 | 84.1 |
+| **ceiling**: reference notes with the curve's median pitch | **75.3** | 88.7 |
+| our generated notes | 73.3 | 84.8 |
+
+* Pitch: we are **2 points below the ceiling** of this pitch curve. Better note placement or
+  splitting can win at most ~2 points; beyond that the curve and the hand-made charts disagree
+  (charters simplify, and ±1 is 84–89 everywhere). Transposed references are not an issue
+  (1 song of 184).
+* Timing, generated words: **74.8 % right** (≤ 250 ms), **11.7 % off** (median miss ~0.9 s, so
+  jumps to the wrong place rather than jitter), **13.6 % not in the reference there** (lyrics or
+  structure); 8.3 % of the reference words we never produce.
+* **Lyrics/structure errors (13.6 % + 8.3 % missing) cost more than timing errors.** The next
+  big lever is lyrics, not alignment or pitch models.
+
+## Double-check warnings: do they point at real errors? (23 songs, `scripts/doublecheck_eval.py`)
+
+Every song generated with one extra model as a double check (warnings only, auto-correct off).
+A *problem* is a word > 250 ms off or not in the reference there, a note whose pitch class is
+wrong on most frames, or a note where the reference has no singing. *Chance* = the same
+warnings placed at random in the song; *new* = problems no issue-model warning touches.
+
+| Double check | warnings/song | precision | chance | new problems found (23 songs) | extra time/song |
+|---|---|---|---|---|---|
+| issue model only (today) | 12.7 | 96 % | 61 % | — | — |
+| **pitch: RMVPE** | 8.4 | 78 % | 43 % | **197** (114 pitch, 52 lyrics, 24 extra, 7 timing) | ~+15–40 s |
+| pitch: FCPE | 7.6 | 77 % | 43 % | 176 | ~+10 s |
+| separation: MelBand | 7.6 | 80 % | 41 % | 129 | ~+16 min |
+| separation: Kim Vocal 2 | 7.0 | 81 % | 40 % | 128 | ~+7 min |
+| separation: Voc FT | 6.7 | 81 % | 42 % | 123 | ~+7 min |
+
+* Double-check warnings are real signal: ~80 % hit a problem vs ~42 % by chance.
+* They find problems the issue model misses (mostly wrong pitches) — about 8 per song for RMVPE.
+* **RMVPE as a pitch double check is the best value**: most new finds, seconds per song.
+  Candidate default (warnings only); a second separation adds ~5 new finds per song for minutes.
+
 ## Current recommendations
 
 * 3 songs mislead for both separation and pitch: the 3-song winners (melband, rmvpe) did not
