@@ -341,3 +341,19 @@ def test_import_youtube_writes_ytid_sidecar(tmp_path, monkeypatch):
     assert side.exists() and side.read_text(encoding="utf-8").strip() == "UbstNV2FUNY"
     # the sidecar is what find_ytid picks up for this audio
     assert batch.find_ytid(folder / st.audio, {}) == "UbstNV2FUNY"
+
+
+def test_find_ytid_usdb_and_videourl(tmp_path, monkeypatch):
+    import json as _json
+    from ultraai import batch
+    from ultraai import config as _c
+    monkeypatch.setattr(_c, "get_bool", lambda k, d=False: True if k == "yt_subs" else d)
+    audio = tmp_path / "Song.mp3"
+    audio.write_bytes(b"x")
+    (tmp_path / "Song.txt").write_text("#TITLE:Song\n#VIDEOURL:https://www.youtube.com/watch?v=ABCDEFGH123\n", encoding="utf-8")
+    assert batch.find_ytid(audio, {}) == "ABCDEFGH123"
+    (tmp_path / "Song.txt").write_text("#TITLE:Song\n", encoding="utf-8")
+    (tmp_path / "x.usdb").write_text(_json.dumps({"meta_tags": "v=12345678901,co=http://x"}), encoding="utf-8")
+    assert batch.find_ytid(audio, {}) == "12345678901"
+    (tmp_path / "x.usdb").unlink()
+    assert batch.find_ytid(audio, {}) is None

@@ -210,7 +210,20 @@ def find_ytid(audio_path, metadata=None) -> str | None:
                 head = txt.read_text(encoding="utf-8", errors="replace")[:8000]
             except OSError:
                 continue
-            m = _VIDEO_V_RE.search(head)
+            m = _VIDEO_V_RE.search(head) or _YT_URL_RE.search(head)  # #VIDEO:v=.. / #VIDEOURL:..
+            if m:
+                return m.group(1)
+    except OSError:
+        pass
+    try:  # USDB metadata file: meta_tags "v=<ytid>,..."
+        import json
+
+        for usdb in sorted(audio_path.parent.glob("*.usdb")):
+            try:
+                data = json.loads(usdb.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, ValueError):
+                continue
+            m = re.search(r"(?:^|[,;])v=([A-Za-z0-9_-]{11})", str(data.get("meta_tags") or ""))
             if m:
                 return m.group(1)
     except OSError:
