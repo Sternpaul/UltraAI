@@ -179,16 +179,76 @@ def read_tags(path: Path) -> Track:
 _YTID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 _YT_URL_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/embed/|/live/)([A-Za-z0-9_-]{11})")
 _VIDEO_V_RE = re.compile(r"(?im)^#VIDEO:\s*v=([A-Za-z0-9_-]{11})")
+_ATTR_RE = re.compile(r"(?im)^#(ARTIST|TITLE):\s*(.*?)\s*$")
+
+
+def _norm(s) -> str:
+    """Casefolded, whitespace-collapsed comparison key for artist/title strings."""
+    return re.sub(r"\s+", " ", str(s)).strip().casefold()
+
+
+def _folder_ytid(audio_path: Path, meta: dict) -> str | None:
+    """Video id from sibling txt (``#VIDEO:v=`` / ``#VIDEOURL``) or ``.usdb``
+    (``meta_tags`` ``v=<id>``) files — never raises.
+
+    These globs see the whole folder, so in a multi-song folder the first
+    attribute found would belong to another song.  A candidate is therefore used
+    only when its file has the audio's stem, is the folder's only candidate, or
+    its ``#ARTIST``/``#TITLE`` match the metadata; otherwise the folder is
+    skipped and LRCLIB stays in charge."""
+    cands = []  # (path, ytid, artist/title attrs of the candidate file)
+    try:
+        for txt in sorted(audio_path.parent.glob("*.txt")):
+            try:
+                head = txt.read_text(encoding="utf-8", errors="replace")[:8000]
+            except OSError:
+                continue
+            m = _VIDEO_V_RE.search(head) or _YT_URL_RE.search(head)  # #VIDEO:v=.. / #VIDEOURL:..
+            if m:
+                cands.append((txt, m.group(1), dict(_ATTR_RE.findall(head))))
+    except OSError:
+        pass
+    try:  # USDB metadata file: meta_tags "v=<ytid>,..."
+        import json
+
+        for usdb in sorted(audio_path.parent.glob("*.usdb")):
+            try:
+                data = json.loads(usdb.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, ValueError):
+                continue
+            m = re.search(r"(?:^|[,;])v=([A-Za-z0-9_-]{11})", str(data.get("meta_tags") or ""))
+            if m:
+                attrs = {k: str(data[k]) for k in ("ARTIST", "TITLE") if data.get(k)}
+                cands.append((usdb, m.group(1), attrs))
+    except OSError:
+        pass
+    if not cands:
+        return None
+    stem = _norm(audio_path.stem)
+    for path, ytid, _ in cands:
+        if _norm(path.stem) == stem:
+            return ytid
+    if len(cands) == 1:
+        return cands[0][1]
+    artist = _norm(meta.get("ARTIST") or meta.get("artist") or "")
+    title = _norm(meta.get("TITLE") or meta.get("title") or "")
+    if artist and title:
+        for _, ytid, attrs in cands:
+            if _norm(attrs.get("ARTIST", "")) == artist and _norm(attrs.get("TITLE", "")) == title:
+                return ytid
+    return None
 
 
 def find_ytid(audio_path, metadata=None) -> str | None:
     """The YouTube video id of a song, if known — never raises.
 
     Sources, in order: a ``<audio-stem>.ytid`` sidecar file next to the audio, a
-    ``#VIDEO:v=<id>`` header in an existing USDX txt in the same folder, an explicit
-    ``YTID``/``SOURCE`` entry in ``metadata`` (job specs), and — only when
-    ``yt_subs_search`` is on — ``resolve_ytid("ARTIST - TITLE")`` (the result is
-    cached by writing the sidecar).  Returns None fast when ``yt_subs`` is off.
+    ``#VIDEO:v=<id>`` header / ``.usdb`` ``meta_tags`` in a sibling file of the
+    same folder (only when it matches the audio by stem, uniqueness, or
+    artist/title), an explicit ``YTID``/``SOURCE`` entry in ``metadata`` (job
+    specs), and — only when ``yt_subs_search`` is on —
+    ``resolve_ytid("ARTIST - TITLE")`` (the result is cached by writing the
+    sidecar).  Returns None fast when ``yt_subs`` is off.
     """
     from . import config, ytsubs
 
@@ -204,30 +264,9 @@ def find_ytid(audio_path, metadata=None) -> str | None:
                 return v
     except OSError:
         pass
-    try:
-        for txt in sorted(audio_path.parent.glob("*.txt")):
-            try:
-                head = txt.read_text(encoding="utf-8", errors="replace")[:8000]
-            except OSError:
-                continue
-            m = _VIDEO_V_RE.search(head) or _YT_URL_RE.search(head)  # #VIDEO:v=.. / #VIDEOURL:..
-            if m:
-                return m.group(1)
-    except OSError:
-        pass
-    try:  # USDB metadata file: meta_tags "v=<ytid>,..."
-        import json
-
-        for usdb in sorted(audio_path.parent.glob("*.usdb")):
-            try:
-                data = json.loads(usdb.read_text(encoding="utf-8", errors="replace"))
-            except (OSError, ValueError):
-                continue
-            m = re.search(r"(?:^|[,;])v=([A-Za-z0-9_-]{11})", str(data.get("meta_tags") or ""))
-            if m:
-                return m.group(1)
-    except OSError:
-        pass
+    ytid = _folder_ytid(audio_path, meta)
+    if ytid:
+        return ytid
     ytid = str(meta.get("YTID") or meta.get("ytid") or "").strip()
     if _YTID_RE.fullmatch(ytid):
         return ytid

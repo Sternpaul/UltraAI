@@ -318,6 +318,30 @@ def test_find_ytid_ignores_malformed_sidecar(tmp_path, monkeypatch):
     assert batch.find_ytid(track.path, {}) == "AAAAAAAAAAA"  # falls through to the header
 
 
+def test_find_ytid_sibling_song_never_wins_in_multi_song_folder(tmp_path, monkeypatch):
+    track = _track(tmp_path)  # "Artist - Title.mp3"
+    meta = {"ARTIST": "Artist", "TITLE": "Title"}
+    (tmp_path / "Other - Song.txt").write_text(
+        "#TITLE:Song\n#ARTIST:Other\n#VIDEO:v=AAAAAAAAAAA\n", encoding="utf-8")
+    # a single candidate is used even though its stem differs from the audio
+    assert batch.find_ytid(track.path, meta) == "AAAAAAAAAAA"
+    # a second, foreign song makes the folder ambiguous: no silent sibling video
+    (tmp_path / "Third - Tune.txt").write_text(
+        "#TITLE:Tune\n#ARTIST:Third\n#VIDEO:v=CCCCCCCCCCC\n", encoding="utf-8")
+    assert batch.find_ytid(track.path, meta) is None
+    # ... unless a candidate matches the audio by stem ...
+    (tmp_path / "Artist - Title.txt").write_text(
+        "#TITLE:Title\n#ARTIST:Artist\n#VIDEO:v=BBBBBBBBBBB\n", encoding="utf-8")
+    assert batch.find_ytid(track.path, meta) == "BBBBBBBBBBB"
+    # ... or by artist/title
+    (tmp_path / "Artist - Title.txt").unlink()
+    (tmp_path / "Third - Tune.txt").write_text(
+        "#TITLE:Title\n#ARTIST:Artist\n#VIDEO:v=CCCCCCCCCCC\n", encoding="utf-8")
+    assert batch.find_ytid(track.path, meta) == "CCCCCCCCCCC"
+    # a mismatching artist/title candidate alone in an ambiguous folder stays ignored
+    assert batch.find_ytid(track.path, {"ARTIST": "Artist", "TITLE": "Other"}) is None
+
+
 # ------------------------------------------------------------------ studio importer
 def test_import_youtube_writes_ytid_sidecar(tmp_path, monkeypatch):
     from ultraai.studio import importer
