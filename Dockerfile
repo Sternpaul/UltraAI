@@ -19,7 +19,12 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY ultraai ./ultraai
-RUN pip install --no-cache-dir ".[worker]"
+# a C compiler only while installing: some worker deps (diffq) build from source
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && pip install --no-cache-dir ".[worker]" \
+    && apt-get purge -y build-essential && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV ULTRAAI_CACHE=/cache
 VOLUME /cache

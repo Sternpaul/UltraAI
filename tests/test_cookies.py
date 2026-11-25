@@ -232,7 +232,9 @@ def test_worker_forwards_cookies_path_into_job_env(monkeypatch, tmp_path):
 
 # ---------------------------------------------------------------- studio settings API
 
-H = {"X-UltraAI": "1"}
+TOKEN = "test-token-cookies-0123456789"
+H = {"x-ultraai": TOKEN}
+BASE = "http://127.0.0.1:8766"
 
 
 @pytest.fixture
@@ -246,8 +248,8 @@ def studio_client(tmp_path, monkeypatch):
     from ultraai.studio.config import Settings
 
     settings = Settings(library=str(tmp_path / "lib"), processor="local")
-    app = create_app(settings, processor_factory=lambda: None, start_queue=False)
-    with TestClient(app) as client:
+    app = create_app(settings, processor_factory=lambda: None, start_queue=False, token=TOKEN, port=8766)
+    with TestClient(app, base_url=BASE) as client:
         yield client, settings
 
 

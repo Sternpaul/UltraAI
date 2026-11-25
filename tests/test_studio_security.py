@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from ultraai.studio.app import create_app  # noqa: E402
 from ultraai.studio.config import Settings, config_dir, load_token, token_path  # noqa: E402
-from ultraai.studio.processors import Cancelled, LocalProcessor, SshProcessor, _PROCS  # noqa: E402
+from ultraai.studio.processors import _PROCS, Cancelled, LocalProcessor, SshProcessor  # noqa: E402
 from ultraai.studio.store import Library, VersionConflict  # noqa: E402
 
 PORT = 8766
@@ -389,7 +389,7 @@ class _RecTransport:
 
 def test_ssh_check_quotes_paths_and_reaps_old_jobs(cfg):
     lib = Library(cfg / "libs")
-    sid = _make_song(lib)
+    _make_song(lib)
     rec = _RecTransport()
     p = SshProcessor(lib, rec, remote_dir="my dir", ultraai="a b/ultraai")
     assert p.check() == "ok"

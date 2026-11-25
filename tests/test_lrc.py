@@ -13,6 +13,9 @@ from ultraai import lrc
 @pytest.fixture
 def cache_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(lrc, "CACHE_DIR", tmp_path)
+    # tests fake time.time(); restore the politeness clock so a faked future request time
+    # cannot make later tests wait (monkeypatch undoes this after each test)
+    monkeypatch.setattr(lrc, "_last_request", 0.0)
     d = tmp_path / "lrclib"
     d.mkdir(parents=True)
     return d

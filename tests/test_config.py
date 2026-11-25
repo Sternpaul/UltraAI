@@ -30,7 +30,7 @@ def test_env_override_and_call_time_read(monkeypatch):
 def test_default_override_param():
     # call-site-specific historical default (cli.py eval --cached-only uses htdemucs)
     assert config.get("separation", default="htdemucs") == "htdemucs"
-    assert config.get("separation") == "melband"
+    assert config.get("separation") == "htdemucs"
 
 
 def test_unknown_key_lists_known():

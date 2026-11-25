@@ -15,8 +15,8 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ultraai.models import BENCH_FILE, LEAD_FILES  # noqa: E402
 from scripts.compare_runs import ref_shifted  # noqa: E402
+from ultraai.models import BENCH_FILE, LEAD_FILES  # noqa: E402
 
 KEYS = {"timing": "onset_within_250ms", "timing_100": "onset_rel_within_100ms", "words": "word_recall",
         "pitch": "pitch_class_acc", "pitch_1": "pitch_class_acc_1"}

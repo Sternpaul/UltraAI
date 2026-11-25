@@ -43,8 +43,8 @@ def cached(wd: Path) -> bool:
 
 
 def _lang(meta: dict) -> str:
-    l = (meta.get("LANGUAGE") or "?").split(",")[0].strip().lower()
-    return {"englisch": "english"}.get(l, l) or "?"
+    lg = (meta.get("LANGUAGE") or "?").split(",")[0].strip().lower()
+    return {"englisch": "english"}.get(lg, lg) or "?"
 
 
 def _genre(meta: dict) -> str:
@@ -59,16 +59,16 @@ def select(cases, n: int) -> list:
     by_lang: dict[str, list] = {}
     for c in todo:
         by_lang.setdefault(_lang(c.metadata), []).append(c)
-    langs = sorted(by_lang, key=lambda l: (-len(by_lang[l]), l))
-    alloc = {l: max(1, round(n * len(by_lang[l]) / max(1, len(todo)))) for l in langs}
-    majority = max(alloc, key=lambda l: len(by_lang[l]), default=None)
+    langs = sorted(by_lang, key=lambda lg: (-len(by_lang[lg]), lg))
+    alloc = {lg: max(1, round(n * len(by_lang[lg]) / max(1, len(todo)))) for lg in langs}
+    majority = max(alloc, key=lambda lg: len(by_lang[lg]), default=None)
     if majority is not None and alloc[majority] > max(1, round(9 * n / 10)):
         alloc[majority] = max(1, round(9 * n / 10))
     while sum(alloc.values()) > n:
-        l = max((l for l in langs if alloc[l] > 1), key=lambda l: alloc[l], default=None)
-        if l is None:
+        lg = max((lg for lg in langs if alloc[lg] > 1), key=lambda lg: alloc[lg], default=None)
+        if lg is None:
             break
-        alloc[l] -= 1
+        alloc[lg] -= 1
 
     def take(bucket: dict[str, list], k: int) -> list:
         genres = sorted(bucket, key=lambda g: (-len(bucket[g]), g))
@@ -83,13 +83,13 @@ def select(cases, n: int) -> list:
         return out
 
     picked: list = []
-    for l in langs:
+    for lg in langs:
         bucket: dict[str, list] = {}
-        for c in by_lang[l]:
+        for c in by_lang[lg]:
             bucket.setdefault(_genre(c.metadata), []).append(c)
         for g in bucket:
             bucket[g].sort(key=lambda c: c.name)
-        picked.extend(take(bucket, alloc[l]))
+        picked.extend(take(bucket, alloc[lg]))
     if len(picked) < n:  # top up from whatever is left, genre round-robin
         rest = [c for c in todo if c not in picked]
         bucket = {}

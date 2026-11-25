@@ -1,7 +1,5 @@
-"""LRC parsing and the on-disk LRCLIB cache in ultraai/lrc.py (HTTP monkeypatched, no network)."""
+"""LRC parsing and best-match selection in ultraai/lrc.py (no network)."""
 
-import json
-import urllib.request
 
 import ultraai.lrc as lrc
 
@@ -40,47 +38,4 @@ def test_best_match_prefers_synced_closest_duration():
     assert not plain.synced and plain.plain == ["hello", "world"]
     assert lrc.best_match([], 100.0) is None
 
-
-CANNED = [{"artistName": "Artist", "trackName": "Title", "duration": 200.0,
-           "syncedLyrics": "[00:01.00]hello\n[00:03.00]world\n", "plainLyrics": "hello\nworld"}]
-
-
-class _Resp:
-    def __init__(self, payload):
-        self._payload = payload
-
-    def read(self):
-        return self._payload
-
-
-def _fake_urlopen(calls, payload):
-    def fake(req, timeout=0):
-        calls.append(req.full_url)
-        return _Resp(payload)
-    return fake
-
-
-def test_lrclib_search_writes_cache_and_reuses_it(monkeypatch, tmp_path):
-    monkeypatch.setattr(lrc, "CACHE_DIR", tmp_path)       # CACHE_DIR was bound at import; patch the use site
-    calls = []
-    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen(calls, json.dumps(CANNED).encode()))
-    res = lrc.search("Artist", "Title")
-    assert res == CANNED and len(calls) == 1
-    assert "artist_name=Artist" in calls[0] and "track_name=Title" in calls[0]
-    files = list((tmp_path / "lrclib").glob("*.json"))
-    assert [f.name for f in files] == ["Artist_Title.json"]
-    assert json.loads(files[0].read_text()) == CANNED
-    # second call is served from the cache: no HTTP
-    assert lrc.search("Artist", "Title") == CANNED
-    assert len(calls) == 1
-
-
-def test_lrclib_query_cache_naming_for_other_params(monkeypatch, tmp_path):
-    monkeypatch.setattr(lrc, "CACHE_DIR", tmp_path)
-    calls = []
-    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen(calls, b"[]"))
-    assert lrc._query({"track_name": "Title"}) == []
-    assert len(calls) == 1 and "track_name=Title" in calls[0]
-    assert [f.name for f in (tmp_path / "lrclib").glob("*.json")] == ["q_track_name_Title.json"]
-    lrc._query({"track_name": "Title"})
-    assert len(calls) == 1                                # cache hit, no second request
+# The LRCLIB cache (naming, TTL, politeness delay) is covered by tests/test_lrc.py.

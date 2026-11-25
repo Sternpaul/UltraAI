@@ -25,7 +25,7 @@ SEPARATION_MODELS = {
     "melband": "vocals_mel_band_roformer.ckpt",
     "bsroformer": "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
 }
-DEFAULT_SEPARATION = "melband"
+DEFAULT_SEPARATION = "htdemucs"  # 23-song depth pass: separation barely matters, htdemucs is fastest
 SEPARATION_NAMES = {"htdemucs": "HTDemucs", "htdemucs_ft": "HTDemucs fine-tuned",
                     "melband": "MelBand RoFormer"}
 LEAD_NAMES = {"kara2": "UVR MDX Karaoke 2", "melkara": "MelBand RoFormer Karaoke"}

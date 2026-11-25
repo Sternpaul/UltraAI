@@ -30,7 +30,7 @@ class Opt:
 
 OPTS: list[Opt] = [
     Opt("cache", "ULTRAAI_CACHE", "", "cache directory (default: ~/.cache/ultraai); read once at import"),
-    Opt("separation", "ULTRAAI_SEPARATION", "melband", "default vocal separation model (audio.py)"),
+    Opt("separation", "ULTRAAI_SEPARATION", "htdemucs", "default vocal separation model (audio.py)"),
     Opt("pitch", "ULTRAAI_PITCH", "swift", "pitch model: swift|rmvpe|fcpe|pesto|crepe-tiny|crepe-full|vote"),
     Opt("lead", "ULTRAAI_LEAD", "", "backing-vocal removal model applied to the vocal stem ('' = keep)"),
     Opt("notes", "ULTRAAI_NOTES", "singer", "note style: singer|easier|easiest"),
@@ -40,7 +40,7 @@ OPTS: list[Opt] = [
     Opt("sep2", "ULTRAAI_SEP2", "", "legacy alias of sep_check"),
     Opt("asr_sep", "ULTRAAI_ASR_SEP", "", "separation whose vocals the Whisper transcript is taken from (benchmarks)"),
 
-    Opt("check_autofix", "ULTRAAI_CHECK_AUTOFIX", "1", "auto-correct note pitch to the consensus of >=2 agreeing double-check models; only active when more than one check model is set; 0 disables"),
+    Opt("check_autofix", "ULTRAAI_CHECK_AUTOFIX", "0", "auto-correct note pitch to the consensus of >=2 agreeing double-check models; only active when more than one check model is set; 0 disables"),
     Opt("melisma", "ULTRAAI_MELISMA", "1", "split held syllables into ~ notes at pitch changes"),
     Opt("minseg", "ULTRAAI_MINSEG", "0.15", "min seconds a pitch region must last to become a note (singer style)"),
     Opt("maxseg", "ULTRAAI_MAXSEG", "6", "max pitch steps inside one long wobbly syllable"),
@@ -57,8 +57,8 @@ OPTS: list[Opt] = [
     Opt("tempo", "ULTRAAI_TEMPO", "1", "detect beats and write a tempo-locked #BPM/#GAP"),
     Opt("beat_robust", "ULTRAAI_BEAT_ROBUST", "1", "score half/double-tempo candidate grids against the onsets with a plausible-BPM prior (tempo.py); 0 = legacy steady-grid choice"),
     Opt("previewstart", "ULTRAAI_PREVIEWSTART", "1", "write #PREVIEWSTART (seconds) at the first chorus start: first note of the largest repeated line group"),
-    Opt("export_lrc", "ULTRAAI_EXPORT_LRC", "1", "write a word-synced .lrc next to the song .txt (byproducts.py)"),
-    Opt("export_ass", "ULTRAAI_EXPORT_ASS", "1", "write a karaoke .ass next to the song .txt (byproducts.py)"),
+    Opt("export_lrc", "ULTRAAI_EXPORT_LRC", "0", "write a word-synced .lrc next to the song .txt (byproducts.py)"),
+    Opt("export_ass", "ULTRAAI_EXPORT_ASS", "0", "write a karaoke .ass next to the song .txt (byproducts.py)"),
     Opt("repair", "ULTRAAI_REPAIR", "1", "override LRC timestamps the audio clearly contradicts"),
     Opt("repair_conf", "ULTRAAI_REPAIR_CONF", "0.15", "min alignment confidence to trust the audio over the LRC"),
     Opt("repair_shift", "ULTRAAI_REPAIR_SHIFT", "3.0", "seconds of disagreement that count as a wrong LRC timestamp"),
@@ -72,7 +72,7 @@ OPTS: list[Opt] = [
     Opt("crepe", "ULTRAAI_CREPE", "tiny", "CREPE model size: tiny|full"),
     Opt("struct_drop", "ULTRAAI_STRUCT_DROP", "0", "drop weakly heard extra line repeats in the structure DP"),
     Opt("stage_timing", "ULTRAAI_STAGE_TIMING", "0", "record per-stage seconds of the pipeline into generate.STAGE_TIMES (benchmarks)"),
-    Opt("onset_snap", "ULTRAAI_ONSET_SNAP", "1", "snap aligned word onsets to detected vocal onsets within the window"),
+    Opt("onset_snap", "ULTRAAI_ONSET_SNAP", "0", "snap aligned word onsets to detected vocal onsets within the window"),
     Opt("onset_snap_win", "ULTRAAI_ONSET_SNAP_WIN", "0.08", "seconds around a word onset to look for a vocal onset to snap to"),
     Opt("keysnap", "ULTRAAI_KEYSNAP", "0", "snap final note pitches to the detected key (Krumhansl-Schmuckler profiles, pitchfit.py); 0 = off"),
     Opt("octave_range", "ULTRAAI_OCTAVE_RANGE", "", "fold final note pitches by whole octaves into this midi range 'lo,hi' (e.g. 48,72); '' = off"),
