@@ -38,6 +38,7 @@ OPTS: list[Opt] = [
     Opt("pitch2", "ULTRAAI_PITCH2", "", "legacy alias of pitch_check"),
     Opt("sep_check", "ULTRAAI_SEP_CHECK", "", "comma-separated extra separation models used as double check"),
     Opt("sep2", "ULTRAAI_SEP2", "", "legacy alias of sep_check"),
+    Opt("asr_model", "ULTRAAI_ASR_MODEL", "large-v3-turbo", "faster-whisper model for the transcript (large-v3-turbo|large-v3|medium|...)"),
     Opt("asr_sep", "ULTRAAI_ASR_SEP", "", "separation whose vocals the Whisper transcript is taken from (benchmarks)"),
 
     Opt("check_autofix", "ULTRAAI_CHECK_AUTOFIX", "0", "auto-correct note pitch to the consensus of >=2 agreeing double-check models; only active when more than one check model is set; 0 disables"),

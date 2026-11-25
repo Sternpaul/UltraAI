@@ -45,9 +45,15 @@ def _model(name: str):
     return _models[name]
 
 
-def transcribe(vocals_16k: Path, language: str | None, model: str = DEFAULT_MODEL,
+def transcribe(vocals_16k: Path, language: str | None, model: str | None = None,
                wave=None) -> list[AsrSegment]:
-    """Transcribe 16 kHz mono vocals (file, or ``wave`` samples); result cached next to the file."""
+    """Transcribe 16 kHz mono vocals (file, or ``wave`` samples); result cached next to the file.
+
+    ``model`` defaults to the ``asr_model`` option (ULTRAAI_ASR_MODEL, default large-v3-turbo)."""
+    if model is None:
+        from . import config
+
+        model = config.get("asr_model") or DEFAULT_MODEL
     if language in (None, "", "xx"):
         language = None
     cache = vocals_16k.with_name(f"{vocals_16k.stem}.asr-{model}-{language or 'auto'}.json")

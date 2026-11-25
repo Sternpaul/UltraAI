@@ -42,6 +42,10 @@ CONFIGS += [(f"sep:{m}", "separation", {"ULTRAAI_SEPARATION": m}) for m in SEPAR
 LEADS = []  # backing-vocal removal measured on 25 songs: timing -1.5 (see BENCHMARK.md), not ranked further
 # dropped to save time (near-duplicates of measured ones): BS-RoFormer ep_317
 CONFIGS += [(f"lead:{m}", "lead", {"ULTRAAI_LEAD": m}) for m in LEADS]
+# transcript: a bigger Whisper model, or Whisper listening to another separation's vocals
+CONFIGS += [("asr:large-v3", "asr", {"ULTRAAI_ASR_MODEL": "large-v3"}),
+            ("asrsep:UVR-MDX-NET-Voc_FT.onnx", "asr", {"ULTRAAI_ASR_SEP": "UVR-MDX-NET-Voc_FT.onnx"}),
+            ("asrsep:melband", "asr", {"ULTRAAI_ASR_SEP": "melband"})]
 
 
 def main(out="out/bench"):
@@ -70,7 +74,7 @@ def main(out="out/bench"):
             for k, v in {**BASE, **env}.items():
                 os.environ[k] = v
             os.environ["ULTRAAI_STAGE_TIMING"] = "1"  # per-stage timings into each row
-            for k in ("ULTRAAI_LEAD",):
+            for k in {k for _, _, e in configs for k in e} - set(BASE):  # no leftovers from earlier configs
                 if k not in env:
                     os.environ.pop(k, None)
             from ultraai import generate
