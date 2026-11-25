@@ -81,6 +81,8 @@ OPTS: list[Opt] = [
     Opt("yt_subs_search", "ULTRAAI_YT_SUBS_SEARCH", "0", "resolve the video id by searching 'ARTIST - TITLE' when unknown (slow)"),
     Opt("yt_anchor", "ULTRAAI_YT_ANCHOR", "1", "use subtitle word times as LRC-style line anchors in the anchored alignment"),
     Opt("cookies", "ULTRAAI_COOKIES", "", "path to a Netscape cookies.txt passed to yt-dlp via --cookies (YouTube 429 rate limits); the file is a secret: never logged, never committed"),
+    Opt("yt_impersonate", "ULTRAAI_YT_IMPERSONATE", "chrome", "yt-dlp --impersonate target (e.g. chrome) for YouTube requests; lifts most 429 rate limits on subtitle downloads. Requires curl_cffi. '' disables"),
+    Opt("yt_sleep_subs", "ULTRAAI_YT_SLEEP_SUBS", "60", "yt-dlp --sleep-subtitles seconds; YouTube restricts auto-subtitles for sessions younger than ~60 s. 0 disables"),
     Opt("asr_prior", "ULTRAAI_ASR_PRIOR", "1.0", "Gaussian time-prior bonus (log-prob units) for aligned words near their Whisper-heard time; 0 disables"),
     Opt("asr_prior_sigma", "ULTRAAI_ASR_PRIOR_SIGMA", "0.3", "std-dev (s) of the Gaussian Whisper time prior in the anchored Viterbi"),
     Opt("background_units", "ULTRAAI_BACKGROUND_UNITS",

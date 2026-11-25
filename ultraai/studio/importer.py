@@ -52,15 +52,22 @@ def import_file(lib: Library, path: Path, original_name: str | None = None, move
 
 
 def _cookie_opts() -> dict:
-    """yt-dlp ``cookiefile`` option when ULTRAAI_COOKIES names an existing file.
+    """yt-dlp options from config: ``cookiefile`` when ULTRAAI_COOKIES names an existing
+    file and ``impersonate`` from ULTRAAI_YT_IMPERSONATE (lifts most YouTube 429s).
 
-    Same rule as ytsubs._ytdlp_extra() (duplicated 3 lines here: importing ytsubs would
+    Same rule as ytsubs._ytdlp_extra() (duplicated here: importing ytsubs would
     pull in numpy via audio.py).  Only the path is passed on — the file is a secret.
     """
     from .. import config
 
+    opts: dict = {}
     path = config.get("cookies").strip()
-    return {"cookiefile": path} if path and Path(path).is_file() else {}
+    if path and Path(path).is_file():
+        opts["cookiefile"] = path
+    target = config.get("yt_impersonate").strip()
+    if target:
+        opts["impersonate"] = target
+    return opts
 
 
 def youtube_info(url: str) -> dict:

@@ -72,13 +72,25 @@ _BACKOFF_S = (5.0, 20.0, 60.0)  # exponential backoff between 429 retries (+ jit
 
 
 def _ytdlp_extra() -> list[str]:
-    """Extra yt-dlp CLI args from config: ``--cookies <path>`` when ULTRAAI_COOKIES names
-    an existing file.  Only the path is ever passed on — the cookies file is a secret
-    and its contents are never logged, printed or committed."""
+    """Extra yt-dlp CLI args from config: ``--impersonate <target>`` (ULTRAAI_YT_IMPERSONATE),
+    ``--sleep-subtitles <s>`` (ULTRAAI_YT_SLEEP_SUBS, YouTube restricts auto-subs for
+    sessions younger than ~60 s) and ``--cookies <path>`` when ULTRAAI_COOKIES names an
+    existing file.  Only the path is ever passed on — the cookies file is a secret and
+    its contents are never logged, printed or committed."""
+    args: list[str] = []
+    target = config.get("yt_impersonate").strip()
+    if target:
+        args += ["--impersonate", target]
+    try:
+        sleep_s = float(config.get("yt_sleep_subs") or 0)
+    except ValueError:
+        sleep_s = 0.0
+    if sleep_s > 0:
+        args += ["--sleep-subtitles", str(int(sleep_s))]
     path = config.get("cookies").strip()
     if path and Path(path).is_file():
-        return ["--cookies", path]
-    return []
+        args += ["--cookies", path]
+    return args
 
 
 def _looks_429(text: str) -> bool:
@@ -104,7 +116,8 @@ def _run_ytdlp(cmd: list[str]) -> str | None:
             log.warning("YouTube rate-limited (429), retrying in %.0f s (attempt %d/%d)",
                         delay, attempt + 2, _MAX_ATTEMPTS)
             _sleep(delay)
-    log.warning("YouTube rate-limited (429); set ULTRAAI_COOKIES to a cookies.txt path")
+    log.warning("YouTube rate-limited (429); check ULTRAAI_YT_IMPERSONATE (needs curl_cffi), "
+                "ULTRAAI_YT_SLEEP_SUBS and ULTRAAI_COOKIES")
     return None
 
 

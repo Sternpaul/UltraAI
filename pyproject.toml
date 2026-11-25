@@ -19,6 +19,7 @@ worker = [
   "audio-separator[cpu]", "audioread",
   "swift-f0",
   "faster-whisper",           # what is actually sung (structure check)
+  "curl_cffi",                # required by yt-dlp --impersonate (YouTube 429 rate limits)
   "uroman",                   # romanization of any script for the aligner
   "scikit-learn",             # issue risk model
   "torchcrepe", "pesto-pitch",  # optional pitch models (main or double-check)
