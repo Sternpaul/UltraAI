@@ -119,6 +119,33 @@ jitter (timing-rel −1.0) without improving timing. Details on the pull request
 | Parameter sweeps | alignment windows, note styles, harmonize tolerances (each ~7 min on 25 songs) | planned |
 | Alternative timing approach | Whisper word-timestamps instead of forced alignment ("m4") | planned |
 
+## Sweep results (25 reference songs, m3, deltas vs base 87.2 / 77.2 / 69.5)
+
+All parameter sweeps leave timing unchanged — **the current defaults are fine**. Pitch reacts:
+
+| Test | timing | timing-rel | pitch |
+|---|---|---|---|
+| harmonize off | +0.0 | +0.0 | +0.4 |
+| harmonize tol 4 | +0.0 | +0.0 | −0.2 |
+| harmonize melisma unify | +0.0 | +0.0 | −1.2 |
+| min. segment 0.30 / 0.08 s | +0.0 | +0.0 | −0.7 / −1.5 |
+| **melisma off** | +0.0 | +0.0 | **−2.9** |
+| repair off | +0.0 | +0.1 | +0.1 |
+| robust align | +0.0 | +0.0 | 0.0 |
+| golden legacy | +0.0 | +0.0 | 0.0 |
+| ASR medium instead of large-v3-turbo | −0.3 | −0.2 | +0.2 |
+
+→ Keep melisma splitting on (it carries real pitch accuracy); keep large-v3-turbo (medium is
+a wash at ~4× the transcription cost). Double-check auto-correct combos (rmvpe+fcpe,
+rmvpe+crepe-tiny, fcpe+crepe-tiny, +pesto, +crepe-tiny) all *lowered* pitch by 0.2–0.6 on the
+25-song set — the +0.6 seen on 3 songs did not generalize → keep `ULTRAAI_CHECK_AUTOFIX` off.
+
+**How much can 3 songs mislead?** Leave-one-out CIs on the 3-song long run: melband timing
+92.0 [88.5..94.8] vs Kim_Vocal_2 90.0 [86.7..93.8] — fully overlapping, i.e. the 3-song
+ranking is not significant. That is why the depth passes on 25 songs decide defaults.
+Per-language on the 25-song gate (small n, indicative): English timing 81.5 vs German 91.1 /
+Spanish 99.4 — English-language songs are the current weak spot.
+
 ## Reproduce
 
 ```bash
