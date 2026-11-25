@@ -119,6 +119,7 @@ jitter (timing-rel −1.0) without improving timing. Details on the pull request
 | Parameter sweeps | harmonize / melisma / minseg / repair / robust / golden / ASR model | **done — table above, defaults win** |
 | Alternative timing approach | Whisper word-timestamps instead of forced alignment ("m4") | **done — clearly worse, dead end** |
 | Check-model combos (double-check auto-fix) | 5 combos × 25 songs | **done — negative on 25 songs, keep off** |
+| YT-subs anchor test | 7 songs with cached subs | **done — negative (line_f1 −16.3), anchor default off** |
 
 ## Sweep results (25 reference songs, m3, deltas vs base 87.2 / 77.2 / 69.5)
 
@@ -151,6 +152,19 @@ The CTC alignment + lyric matching stays.
 ranking is not significant. That is why the depth passes on 25 songs decide defaults.
 Per-language on the 25-song gate (small n, indicative): English timing 81.5 vs German 91.1 /
 Spanish 99.4 — English-language songs are the current weak spot.
+
+## YouTube-subtitle experiments (PR-15/PR-16)
+
+YouTube auto/manual captions were tested as a timed-lyrics source on the songs where subs
+could be fetched (n=7 of the 25; YouTube 429-rate-limits subtitle downloads hard — with a
+cookies file we still only got 7/25; PO-token support would be the robust fix):
+
+- **As anchors/lyrics in m3: negative.** vs base m3 on the same 7 songs: timing −1.2,
+  timing-rel −1.0, pitch −1.5, word_recall −3.9, line_f1 **−16.3** (sub line breaks don't
+  match reference phrasing). → `ULTRAAI_YT_ANCHOR` should default to **0**; subs stay a
+  fallback lyrics source for songs LRCLIB misses.
+- **`yt_agreement`** (Whisper vs YouTube-ASR word agreement) is a useful free quality signal:
+  mean 0.57 on the 7 songs, range 0.04–0.84 — garbled auto-captions are detectable this way.
 
 ## Reproduce
 
