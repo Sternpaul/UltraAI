@@ -72,8 +72,8 @@ def studio(tmp_path):
         p.start_template = "cd {dir} && (nohup {ultraai} process jobs/{id} > /dev/null 2>&1 &)"
         return p
 
-    app = create_app(settings, processor_factory=proc)
-    with TestClient(app) as client:
+    app = create_app(settings, processor_factory=proc, token=TOKEN, port=8766)
+    with TestClient(app, base_url="http://127.0.0.1:8766") as client:
         yield client, home
 
 
@@ -92,7 +92,8 @@ def _wait(client, sid, states, timeout=20):
     raise AssertionError(f"timeout, state {s['state']} {s.get('error')}")
 
 
-H = {"X-UltraAI": "1"}
+TOKEN = "test-token-studio-0123456789"
+H = {"x-ultraai": TOKEN}
 
 
 def test_upload_process_edit_review(studio, tmp_path):
@@ -112,7 +113,8 @@ def test_upload_process_edit_review(studio, tmp_path):
     n = doc["voices"][0]["lines"][0]["notes"][0]
     n["text"] = "Changed"
     n["start"] += 0.2
-    r = client.put(f"/api/songs/{sid}/doc", json={"doc": doc, "note": "test edit"}, headers=H)
+    r = client.put(f"/api/songs/{sid}/doc", json={"doc": doc, "note": "test edit", "base_version": d.get("doc_version", 0)},
+                   headers=H)
     assert r.status_code == 200, r.text
     d2 = client.get(f"/api/songs/{sid}/doc").json()
     assert d2["doc"]["voices"][0]["lines"][0]["notes"][0]["text"] == "Changed"
