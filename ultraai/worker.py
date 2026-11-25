@@ -103,6 +103,9 @@ def apply_options(spec: dict) -> dict:
             os.environ[env] = str(v)
         else:
             os.environ.pop(env, None)
+    cookies = (spec.get("options") or {}).get("cookies") or spec.get("cookies")
+    if cookies:  # a path, never contents: forwarded into this job's env when the job sets it
+        os.environ[config.env_of("cookies")] = str(cookies)
     return opts
 RATES_FILE = CACHE_DIR / "stage_rates.json"
 

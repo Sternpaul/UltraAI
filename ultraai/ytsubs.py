@@ -13,16 +13,22 @@ corrupt cache) yields ``None`` / ``[]`` / ``0.0``.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import random
 import re
 import subprocess
 import tempfile
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import config
 from .audio import CACHE_DIR
 from .lyrics import clean_lines
+
+log = logging.getLogger("ultraai.ytsubs")
 
 YT_URL = "https://www.youtube.com/watch?v={ytid}"
 
@@ -57,6 +63,49 @@ def _run(cmd: list[str]) -> str:
     if r.returncode != 0:
         raise RuntimeError(f"{cmd[0]} failed (rc={r.returncode}): {r.stderr.strip()[-300:]}")
     return r.stdout
+
+
+_sleep = time.sleep  # injectable for tests
+
+_MAX_ATTEMPTS = 3
+_BACKOFF_S = (5.0, 20.0, 60.0)  # exponential backoff between 429 retries (+ jitter)
+
+
+def _ytdlp_extra() -> list[str]:
+    """Extra yt-dlp CLI args from config: ``--cookies <path>`` when ULTRAAI_COOKIES names
+    an existing file.  Only the path is ever passed on — the cookies file is a secret
+    and its contents are never logged, printed or committed."""
+    path = config.get("cookies").strip()
+    if path and Path(path).is_file():
+        return ["--cookies", path]
+    return []
+
+
+def _looks_429(text: str) -> bool:
+    return "429" in (text or "")
+
+
+def _run_ytdlp(cmd: list[str]) -> str | None:
+    """``_run`` with 429 resilience: up to 3 attempts, backoff 5s/20s/60s + jitter.
+
+    A 429 in the output or in the failure message is retried; after the last attempt a
+    warning points at ULTRAAI_COOKIES and None is returned.  Any other failure
+    re-raises (callers already turn that into None)."""
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            out = _run(cmd)
+            if not _looks_429(out):
+                return out
+        except RuntimeError as exc:
+            if not _looks_429(str(exc)):
+                raise
+        if attempt + 1 < _MAX_ATTEMPTS:
+            delay = _BACKOFF_S[attempt] + random.uniform(0.0, 1.0)
+            log.warning("YouTube rate-limited (429), retrying in %.0f s (attempt %d/%d)",
+                        delay, attempt + 2, _MAX_ATTEMPTS)
+            _sleep(delay)
+    log.warning("YouTube rate-limited (429); set ULTRAAI_COOKIES to a cookies.txt path")
+    return None
 
 
 def _cache_write(cache: Path, data) -> None:
@@ -100,13 +149,14 @@ def fetch_subs(ytid: str, manual: bool = True) -> dict | None:
             except Exception:
                 pass  # corrupt cache: refetch
         with tempfile.TemporaryDirectory() as tmp:
-            cmd = ["yt-dlp", "--skip-download", "--sub-format", "json3",
-                   "--sub-langs", ",".join(SUB_LANGS)]
+            cmd = ["yt-dlp", "--skip-download", "--sleep-requests", "1", "--sub-format", "json3",
+                   "--sub-langs", ",".join(SUB_LANGS), *_ytdlp_extra()]
             if manual:
                 cmd.append("--write-subs")
             cmd += ["--write-auto-subs", "-o", str(Path(tmp) / "sub.%(ext)s"),
                     YT_URL.format(ytid=ytid)]
-            _run(cmd)
+            if _run_ytdlp(cmd) is None:
+                return None
             sub = _pick_sub_file(Path(tmp))
             if sub is None:
                 return None
@@ -210,7 +260,10 @@ def resolve_ytid(query: str) -> str | None:
         cache = cache_dir / f"search_{name}.txt"
         if cache.exists():
             return cache.read_text(encoding="utf-8").strip() or None
-        out = _run(["yt-dlp", "--skip-download", "--print", "id", f"ytsearch1:{query}"])
+        out = _run_ytdlp(["yt-dlp", "--skip-download", "--sleep-requests", "1", *_ytdlp_extra(),
+                          "--print", "id", f"ytsearch1:{query}"])
+        if out is None:
+            return None
         ytid = out.strip().splitlines()[-1].strip() if out.strip() else ""
         if not ytid:
             return None

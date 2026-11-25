@@ -80,6 +80,7 @@ OPTS: list[Opt] = [
     Opt("yt_subs", "ULTRAAI_YT_SUBS", "1", "use YouTube auto/manual subtitles as the lyrics source when a video id is known"),
     Opt("yt_subs_search", "ULTRAAI_YT_SUBS_SEARCH", "0", "resolve the video id by searching 'ARTIST - TITLE' when unknown (slow)"),
     Opt("yt_anchor", "ULTRAAI_YT_ANCHOR", "1", "use subtitle word times as LRC-style line anchors in the anchored alignment"),
+    Opt("cookies", "ULTRAAI_COOKIES", "", "path to a Netscape cookies.txt passed to yt-dlp via --cookies (YouTube 429 rate limits); the file is a secret: never logged, never committed"),
     Opt("asr_prior", "ULTRAAI_ASR_PRIOR", "1.0", "Gaussian time-prior bonus (log-prob units) for aligned words near their Whisper-heard time; 0 disables"),
     Opt("asr_prior_sigma", "ULTRAAI_ASR_PRIOR_SIGMA", "0.3", "std-dev (s) of the Gaussian Whisper time prior in the anchored Viterbi"),
     Opt("background_units", "ULTRAAI_BACKGROUND_UNITS",

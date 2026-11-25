@@ -51,13 +51,25 @@ def import_file(lib: Library, path: Path, original_name: str | None = None, move
     return lib.state(st.id)
 
 
+def _cookie_opts() -> dict:
+    """yt-dlp ``cookiefile`` option when ULTRAAI_COOKIES names an existing file.
+
+    Same rule as ytsubs._ytdlp_extra() (duplicated 3 lines here: importing ytsubs would
+    pull in numpy via audio.py).  Only the path is passed on — the file is a secret.
+    """
+    from .. import config
+
+    path = config.get("cookies").strip()
+    return {"cookiefile": path} if path and Path(path).is_file() else {}
+
+
 def youtube_info(url: str) -> dict:
     import yt_dlp
 
     from .logs import YtdlpLogger
 
     with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "skip_download": True,
-                           "logger": YtdlpLogger()}) as y:
+                           "logger": YtdlpLogger(), **_cookie_opts()}) as y:
         return y.extract_info(url, download=False)
 
 
@@ -81,7 +93,8 @@ def _download(url: str, fmt: str, dest: Path, hook=None) -> Path:
     from .logs import YtdlpLogger
 
     opts = {"quiet": True, "noplaylist": True, "format": fmt, "outtmpl": str(dest / "dl.%(ext)s"),
-            "progress_hooks": [hook] if hook else [], "logger": YtdlpLogger(), "verbose": True}
+            "progress_hooks": [hook] if hook else [], "logger": YtdlpLogger(), "verbose": True,
+            **_cookie_opts()}
     with yt_dlp.YoutubeDL(opts) as y:
         y.download([url])
     return next(p for p in dest.iterdir() if p.name.startswith("dl."))

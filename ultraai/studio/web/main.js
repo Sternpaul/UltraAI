@@ -364,6 +364,7 @@ document.getElementById("open-settings").addEventListener("click", async () => {
   sform.elements.log_level.value = st.log_level || "info";
   sform.elements.youtube_video.value = st.youtube_video || "none";
   sform.elements.youtube_cover.checked = !!st.youtube_cover;
+  sform.elements.cookies.value = st.cookies || "";
   for (const r of sform.querySelectorAll("[name=processor]")) r.checked = r.value === st.processor;
   document.getElementById("settings-test-result").textContent = "";
   sdlg.returnValue = "";
@@ -374,6 +375,7 @@ function settingsBody() {
   return { library: f.library.value.trim(), processor: sform.querySelector("[name=processor]:checked")?.value || "ssh",
     ssh_host: f.ssh_host.value.trim(), ssh_port: Number(f.ssh_port.value) || 0, remote_dir: f.remote_dir.value.trim() || "UltraAI",
     youtube_audio: f.youtube_audio.value, youtube_video: f.youtube_video.value, youtube_cover: f.youtube_cover.checked,
+    cookies: f.cookies.value.trim(),
     separation: f.separation.value, log_level: f.log_level.value };
 }
 document.getElementById("settings-test").addEventListener("click", async () => {

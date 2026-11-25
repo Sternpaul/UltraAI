@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import traceback
@@ -431,6 +432,16 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
 
     @app.put("/api/settings")
     def put_settings(body: dict):
+        if "cookies" in body:  # a path, not the file: validate existence, tighten permissions
+            path = str(body["cookies"] or "").strip()
+            if path and not Path(path).is_file():
+                raise HTTPException(400, "cookies path must name an existing file")
+            body["cookies"] = path
+            if path:
+                try:
+                    os.chmod(path, 0o600)  # best-effort: the cookies file is a secret
+                except OSError:
+                    pass
         for k, v in body.items():
             if k in Settings.__dataclass_fields__ and k != "extra":
                 cur = getattr(settings, k)
