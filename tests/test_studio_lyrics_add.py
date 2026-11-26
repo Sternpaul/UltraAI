@@ -185,3 +185,87 @@ def test_set_lyrics_still_overwrites(studio, tmp_path):
     assert _spec(studio, sid)["lyrics"] == "second version\n"
     st = studio.get(f"/api/songs/{sid}").json()
     assert st["state"] == "queued" and st["priority"] >= 1  # re-queued, as before
+
+
+# ------------------------------------------------- queue pick-up (queue thread running)
+class _RecordingProcessor(Processor):
+    """The queue's processor: records the job spec each run uses, then 'finishes' the song."""
+
+    def __init__(self, lib, seen):
+        super().__init__(lib)
+        self.seen = seen
+
+    def process(self, sid, stage=None):
+        self.seen.append(self.job_spec(sid, "testjob"))
+        self.lib.update(sid, state="needs_review", job={})
+        return "needs_review"
+
+
+@pytest.fixture
+def studio_q(cfg):
+    """Like ``studio``, but with the queue thread running: every pick-up is visible as a
+    recorded job spec."""
+    seen: list = []
+    settings = Settings(library=str(cfg / "lib"), processor="local")
+    app = create_app(settings, processor_factory=lambda: _RecordingProcessor(app.state.lib, seen),
+                     start_queue=True, token=TOKEN, port=PORT)
+    with TestClient(app, base_url=BASE) as client:
+        client.seen = seen
+        yield client
+
+
+def _wait_state(client, sid, state, timeout=10):
+    t = time.time() + timeout
+    s = {}
+    while time.time() < t:
+        s = client.get(f"/api/songs/{sid}").json()
+        if s["state"] == state:
+            return s
+        time.sleep(0.05)
+    raise AssertionError(f"timeout, state {s.get('state')} (wanted {state})")
+
+
+def test_files_with_lyrics_never_run_without_them(studio_q, tmp_path):
+    """The song only becomes pickable once its pasted lyrics are on disk (import_file
+    keeps it 'downloading' until then), so every run sees them."""
+    sid = _upload(studio_q, tmp_path, lyrics="line one\nline two\n")
+    _wait_state(studio_q, sid, "needs_review")
+    assert len(studio_q.seen) == 1
+    assert studio_q.seen[0]["lyrics"] == "line one\nline two\n"
+
+
+def test_set_lyrics_on_downloading_song(studio_q, tmp_path):
+    """Lyrics on a downloading song: stored, but the song stays 'downloading' — no queue
+    pick-up (no full audio yet); the import thread queues it with the lyrics in place."""
+    lib = studio_q.app.state.lib
+    sid = lib.create("Some Artist", "Downloading Song", state="downloading").id
+    r = studio_q.post(f"/api/songs/{sid}/lyrics", json={"text": "  pasted while downloading  "}, headers=H)
+    assert r.status_code == 200, r.text
+    assert _lyrics_file(studio_q, sid).read_text(encoding="utf-8") == "pasted while downloading\n"
+    st = studio_q.get(f"/api/songs/{sid}").json()
+    assert st["state"] == "downloading" and st["stage"] == ""  # not force-queued
+    assert st["lyrics_source"] == "user"
+    time.sleep(0.3)  # the queue thread is idle: nothing must have picked the song up
+    assert not studio_q.seen
+    assert studio_q.get(f"/api/songs/{sid}").json()["state"] == "downloading"
+    # the import thread finishing = audio has landed, the song is queued as usual
+    f = tmp_path / "audio.wav"
+    _wav(f)
+    lib.add_audio(sid, f)
+    lib.update(sid, state="queued", stage="")
+    studio_q.app.state.queue.poke()
+    _wait_state(studio_q, sid, "needs_review")
+    assert studio_q.seen[0]["lyrics"] == "pasted while downloading\n"
+
+
+def test_set_lyrics_on_idle_song_still_reruns_it(studio_q, tmp_path):
+    """Happy path: adding lyrics to an idle (finished) song re-queues and re-runs it."""
+    sid = _upload(studio_q, tmp_path)  # runs once, without lyrics
+    _wait_state(studio_q, sid, "needs_review")
+    assert "lyrics" not in studio_q.seen[0]
+    r = studio_q.post(f"/api/songs/{sid}/lyrics", json={"text": "second attempt"}, headers=H)
+    assert r.status_code == 200, r.text
+    s = studio_q.get(f"/api/songs/{sid}").json()
+    assert s["priority"] >= 1 and s["lyrics_source"] == "user"
+    _wait_state(studio_q, sid, "needs_review")
+    assert studio_q.seen[-1]["lyrics"] == "second attempt\n"

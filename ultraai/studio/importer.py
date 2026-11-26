@@ -43,12 +43,20 @@ def tags_of(path: Path) -> tuple[str, str]:
     return guess_artist_title(path.stem)
 
 
-def import_file(lib: Library, path: Path, original_name: str | None = None, move: bool = False) -> SongState:
+def import_file(lib: Library, path: Path, original_name: str | None = None, move: bool = False,
+                lyrics: str = "") -> SongState:
+    """Import an audio file.  ``lyrics`` (pasted at add time) are written while the song is
+    still 'downloading' (= not pickable by the queue), which then also gets its audio — the
+    song only becomes 'queued' once both are in place, so no scan can run it without them."""
     artist, title = tags_of(path)
     if not artist and original_name:
         artist, title = guess_artist_title(Path(original_name).stem)
-    st = lib.create(artist, title, source=original_name or path.name)
+    st = lib.create(artist, title, source=original_name or path.name,
+                    state="downloading" if lyrics.strip() else "queued")
     lib.add_audio(st.id, path, move=move)
+    if lyrics.strip():
+        save_user_lyrics(lib, st.id, lyrics)
+        lib.update(st.id, state="queued")
     return lib.state(st.id)
 
 

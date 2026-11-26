@@ -312,9 +312,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
                         if size > MAX_UPLOAD:  # abort mid-stream, not just via Content-Length
                             raise HTTPException(413, f"upload too large (max {MAX_UPLOAD // 2**30} GiB)")
                         tmp.write(chunk)
-                st = import_file(lib, Path(tmp_name), original_name=f.filename, move=True)
-                if text:  # right after the song exists, before the queue can pick it up
-                    save_user_lyrics(lib, st.id, text)
+                st = import_file(lib, Path(tmp_name), original_name=f.filename, move=True, lyrics=text)
                 st = lib.update(st.id, options=opts)
                 out.append(card(st))
             finally:  # never leak the temp file (import_file may have moved it away already)
@@ -364,8 +362,13 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
 
     @app.post("/api/songs/{sid}/lyrics")
     def set_lyrics(sid: str, body: LyricsIn):
+        """Store the user's lyrics and re-queue the song — unless it is still downloading:
+        there is no (full) audio yet, so the queue must not pick it up; the import thread
+        queues it as usual once the audio has landed, and the run then uses these lyrics."""
         st = get_state(sid)
         save_user_lyrics(lib, sid, body.text)
+        if st.state == "downloading":
+            return {"ok": True}
         lib.update(sid, state="queued", stage="", error="", priority=max(st.priority, 1), job={})
         queue.poke()
         return {"ok": True}
