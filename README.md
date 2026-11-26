@@ -8,7 +8,7 @@ audio decides *when* each syllable is sung and at which pitch. A risk model plus
 double-checks mark the places where the machine is unsure, and **UltraAI Studio** takes you
 straight there to fix them.
 
-Long-form guides live in the [wiki](https://github.com/Sternpaul/UltraAI/wiki).
+Long-form guides live in [docs/guides/](docs/guides/README.md).
 
 Inspired by [UltraSinger](https://github.com/rakuri255/UltraSinger) — but written from
 scratch, not a fork; [PLAN.md](PLAN.md) §1 lists what reading its code taught us.
@@ -41,7 +41,7 @@ warnings (on by default), validator warnings (overlaps, missing breaks, …) sho
 the exact song time with a jump-to button, editor version history with one-click restore, live
 song-list updates (server-sent events), parallel worker jobs (`ULTRAAI_MAX_JOBS`), and
 YouTube rate-limit handling (`ULTRAAI_COOKIES` + browser impersonation). See the
-[wiki](https://github.com/Sternpaul/UltraAI/wiki) for details.
+[docs/guides/](docs/guides/README.md) for details.
 
 ```mermaid
 flowchart LR
@@ -164,7 +164,7 @@ ultraai check FILE.txt        validate an UltraStar file
 * `docs/pipeline-improvements.md` – researched ideas for the automatic pipeline, with measured verdicts.
 * `docs/ROADMAP.md`, `docs/ultrastar-format.md` – roadmap; the USDX format we read/write.
 * `PLAN.md` – method and measurements; `EDITOR_PLAN.md` – Studio design and status.
-* The [wiki](https://github.com/Sternpaul/UltraAI/wiki) mirrors these as guides (Studio, CLI, configuration reference, benchmarks, troubleshooting).
+* Guides: [docs/guides/](docs/guides/README.md) (Studio, CLI, configuration reference, troubleshooting).
 * All `ULTRAAI_*` settings are registered in `ultraai/config.py` (`python -c "from ultraai import config; print(config.table())"`).
 * The Windows installer is built by `.github/workflows/windows-installer.yml`
   (PyInstaller + Inno Setup); tag `vX.Y.Z` to publish a release.
