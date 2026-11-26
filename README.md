@@ -98,6 +98,8 @@ The library is a normal USDX song folder (`Artist - Title/Artist - Title.txt`, `
 
 ### Editor in one minute
 
+![UltraAI Studio editor](docs/assets/editor.png)
+
 * Top: preview as the game shows it. Middle: notes over the singer's pitch curve (orange),
   with what speech recognition heard (grey words) and the vocal waveform. Red areas are
   places to check; the list on the right explains why. `Tab` jumps to the next one.
