@@ -49,21 +49,39 @@ export async function openEditor(root, id, crumbs) {
   // Issues are listed in song order (by start time), so you can work through them top to bottom;
   // risk is only a tiebreaker for issues at the same timestamp.
   const byTime = (a, b) => a.start - b.start || b.risk - a.risk;
+  // Validator problems of the saved txt (GET /doc, refreshed by PUT /doc) become jump-to
+  // issues at the top of the Issues tab.  The server sends beats; the doc works in seconds,
+  // so convert with the song's own BPM/GAP (same as beat_to_seconds) for jump-to and fmtTime.
+  const spb = 60 / (4 * (doc.bpm || 300)), gapS = (doc.gap_ms || 0) / 1000;
+  const beatSec = b => gapS + b * spb;
+  const validateIssuesOf = (list) => (list || []).map(p => {
+    const v = doc.voices.find(x => x.voice === (p.voice ?? 1)) ?? doc.voices[0];
+    const ln = p.line != null && v ? v.lines[p.line] : null;
+    const start = p.beat != null ? beatSec(p.beat) : (ln ? lineStart(ln) : 0);
+    const end = p.beat != null ? start + spb : (ln ? Math.max(lineEnd(ln), start + 1) : start + 1);
+    return {
+      key: `validate-${p.code}-${p.voice ?? 0}-${p.line ?? -1}-${p.beat ?? -1}`,
+      kind: "validate", code: p.code, level: p.level, risk: p.level === "error" ? 1 : 0.7,
+      text: p.message, start, end, line: p.line ?? null, voice: p.voice ?? null,
+      dismissed: false, dismissible: false,
+    };
+  });
+  let validateIssues = validateIssuesOf(data.problem_details);
+  const serverIssues = data.issues.map(i => ({ ...i }));
   const ed = {
     voice: 0, lines: doc.voices[0].lines, selection: new Set(), editor: editorData,
-    issues: data.issues.map(i => ({ ...i })).sort(byTime), extraNotes: new Set(), missingMarks: [],
+    issues: [...validateIssues, ...serverIssues].sort(byTime), extraNotes: new Set(), missingMarks: [],
     currentIssue: null, loop: null, band: null, hoverBreak: null, duration: 0, curveOffset: 0,
     pitchSpan: { lo: 0, hi: 12 },
   };
   const undo = [], redo = [];
-  const serverIssues = ed.issues;
   const lyricText = data.lyrics_info?.text || null;
   const dismissedKeys = new Set(data.dismissed || []);
   function refreshLyricIssues() {  // live checks: lyrics vs song, notes vs voice
     const cur = ed.currentIssue?.key;
     const live = [...(lyricText ? lyricIssues(ed.lines, lyricText) : []), ...pitchIssues(ed.lines, ed.editor, ed.curveOffset)];
     const li = live.map(i => ({ ...i, dismissed: dismissedKeys.has(i.key) }));
-    ed.issues = [...serverIssues, ...li].sort(byTime);
+    ed.issues = [...validateIssues, ...serverIssues, ...li].sort(byTime);
     ed.extraNotes = new Set(li.filter(i => i.kind === "lyrics_extra" && !i.dismissed).flatMap(i => i.notes));
     ed.missingMarks = li.filter(i => i.kind === "lyrics_missing" && !i.dismissed);
     ed.currentIssue = cur ? ed.issues.find(i => i.key === cur) ?? null : null;
@@ -577,8 +595,26 @@ export async function openEditor(root, id, crumbs) {
     try {
       const r = await api(`/api/songs/${id}/doc`, { method: "PUT", json: { doc, note: "edit", base_version: baseVersion } });
       baseVersion = r.doc_version ?? baseVersion + 1;
+      if (r.problem_details) {  // refresh the validator issues in the Issues tab
+        validateIssues = validateIssuesOf(r.problem_details);
+        refreshLyricIssues(); renderIssues();
+      }
       setSave(dirty ? "unsaved" : "saved", (r.problems || []).join("\n"));
-      if (r.problems?.length) toast(`Saved with warnings: ${r.problems[0]}`);
+      if (r.problem_details?.length) {
+        const n = r.problem_details.length;
+        const first = validateIssues[0];
+        toast(`Saved with ${n} warning${n === 1 ? "" : "s"} — first: ${first ? fmtTime(first.start) + " · " : ""}${r.problem_details[0].message}`, {
+          ms: 0,  // persistent until dismissed
+          action: {
+            label: "Show",
+            fn: () => {
+              showTab("issues");
+              const first = validateIssues[0] ?? ed.issues.find(i => i.kind === "validate");
+              if (first) gotoIssue(first);
+            },
+          },
+        });
+      }
     } catch (e) {
       dirty = true;
       if (e.status === 409) {  // the song changed on the server (reprocessed or saved elsewhere)
@@ -639,20 +675,29 @@ export async function openEditor(root, id, crumbs) {
     const open = ed.issues.filter(i => !i.dismissed).length;
     issueHead.replaceChildren(`${open} open of ${ed.issues.length}`, h("span", { class: "spacer" }),
       h("button", { type: "button", class: "small", onclick: () => stepIssue(1) }, "Next ⇥"));
-    issueList.replaceChildren(...(ed.issues.length ? ed.issues.map(is =>
+    // validator problems of the saved file first (with their level colour), then the rest in song order
+    const rows = [...ed.issues].sort((a, b) =>
+      (a.kind === "validate" ? 0 : 1) - (b.kind === "validate" ? 0 : 1) || byTime(a, b));
+    issueList.replaceChildren(...(rows.length ? rows.map(is =>
       h("div", { class: `item${is === ed.currentIssue ? " current" : ""}${is.dismissed ? " dismissed" : ""}`,
         onclick: () => gotoIssue(is) },
-        h("span", { class: "risk", style: `background:${riskColor(is.risk)}`, title: `risk ${Math.round(is.risk * 100)} %` }),
-        h("span", { class: "t" }, fmtTime(is.start).replace(/\.\d+$/, "")),
+        h("span", { class: "risk",
+          style: `background:${is.kind === "validate"
+            ? (is.level === "error" ? "var(--bad)" : "var(--warn)") : riskColor(is.risk)}`,
+          title: is.kind === "validate" ? `${is.level} (${is.code})` : `risk ${Math.round(is.risk * 100)} %` }),
+        h("span", { class: "t" }, is.kind === "validate" ? fmtTime(is.start) : fmtTime(is.start).replace(/\.\d+$/, "")),
         h("div", { class: "txt" },
           is.compare ? compareRows(is.compare) : null,
-          h("div", {}, is.kind === "missing_lyrics" ? `Heard but not in lyrics: “${is.text}”`
+          h("div", {}, is.kind === "validate" ? `${is.code} · ${is.text}`
+            : is.kind === "missing_lyrics" ? `Heard but not in lyrics: “${is.text}”`
             : is.kind === "lyrics_missing" ? `Missing word${/\s/.test(is.text) ? "s" : ""}: “${is.text}”`
             : is.kind === "lyrics_extra" ? `Not in the lyrics: “${is.text}”` : is.text),
           h("div", { class: "why" }, (is.reasons || []).join(" · "))),
+        h("button", { type: "button", class: "small ghost", title: "Jump to this (⇥)",
+          onclick: e => { e.stopPropagation(); gotoIssue(is); } }, "⇥"),
         is.dismissed || is.kind !== "repeat" ? null : h("button", { type: "button", class: "small primary",
           title: "Use the notes of the other repeats here", onclick: e => { e.stopPropagation(); makeSame(is); } }, "Make same"),
-        is.dismissed ? null : h("button", { type: "button", class: "small ghost", title: "This is fine",
+        is.dismissed || is.kind === "validate" ? null : h("button", { type: "button", class: "small ghost", title: "This is fine",
           onclick: e => { e.stopPropagation(); dismiss(is); } }, "✓ OK")))
       : [h("div", { class: "empty" }, "No issues found. Play it through once to be sure.")]));
   }
