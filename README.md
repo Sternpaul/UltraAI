@@ -128,9 +128,11 @@ The library is a normal USDX song folder (`Artist - Title/Artist - Title.txt`, `
 
 Logs: the *Log* page in the app, or `%APPDATA%\UltraAI\studio.log`.
 
-## Processing server
+## Processing server (optional)
 
-Linux with Python ≥ 3.11 and ffmpeg (CPU is enough; a GPU makes it ~10× faster):
+By default the Studio processes songs on your own PC (Settings → *On this computer*). This
+section is only for offloading to a faster machine. That machine needs Linux with
+Python ≥ 3.11 and ffmpeg (CPU is enough; a GPU makes it ~10× faster):
 
 ```bash
 git clone https://github.com/Sternpaul/UltraAI.git && cd UltraAI
