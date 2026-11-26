@@ -86,10 +86,11 @@ def match_words(ref: list[TimedWord], hyp: list[TimedWord], time_scale: float = 
         sm = SequenceMatcher(None, [w.token for w in ref], [w.token for w in hyp], autojunk=False)
         return [(b.a + k, b.b + k) for b in sm.get_matching_blocks() for k in range(b.size)]
     import math
-    score = [[0.0] * (m + 1) for _ in range(n + 1)]
-    back = [[0] * (m + 1) for _ in range(n + 1)]  # 0 diag, 1 up, 2 left
+    stride = m + 1
+    back = bytearray((n + 1) * stride)  # 0 diag, 1 up, 2 left - one uint8 per cell
+    prev = [0.0] * stride
     for i in range(1, n + 1):
-        ri, row, prev = ref[i - 1], score[i], score[i - 1]
+        ri, row, base = ref[i - 1], [0.0] * stride, i * stride
         for j in range(1, m + 1):
             best, how = prev[j], 1
             if row[j - 1] > best:
@@ -99,10 +100,12 @@ def match_words(ref: list[TimedWord], hyp: list[TimedWord], time_scale: float = 
                 v = prev[j - 1] + 1.0 + 0.5 * math.exp(-abs(hj.start - ri.start) / time_scale)
                 if v > best:
                     best, how = v, 0
-            row[j], back[i][j] = best, how
+            row[j] = best
+            back[base + j] = how
+        prev = row
     pairs, i, j = [], n, m
     while i and j:
-        how = back[i][j]
+        how = back[i * stride + j]
         if how == 0:
             pairs.append((i - 1, j - 1))
             i, j = i - 1, j - 1
