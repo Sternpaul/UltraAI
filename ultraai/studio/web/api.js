@@ -1,6 +1,6 @@
-// Small client for the Studio backend.  Mutating requests carry the per-install token
-// (injected into index.html as a meta tag) in the x-ultraai header.  The SSE stream
-// (EventSource cannot set headers) carries the same token as ?token= — see events.js.
+// Small client for the Studio backend.  Requests carry the per-install token (injected
+// into index.html as a meta tag) in the x-ultraai header — including the SSE stream,
+// which events.js consumes with fetch streaming, not EventSource.
 
 export class ApiError extends Error {
   constructor(msg, status) {

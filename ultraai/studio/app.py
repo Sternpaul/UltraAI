@@ -2,13 +2,16 @@
 
     ultraai studio [--port 8766] [--no-window]
 
-Binds to 127.0.0.1 only.  Mutating requests must carry ``x-ultraai: <token>`` — the
-per-install token from ``token.txt`` in the config dir (injected into index.html as a
-meta tag) — compared with hmac.compare_digest, so a browser page from another site
-cannot add that header without a CORS preflight, which we never allow.  The one
-exception is ``GET /api/events`` (SSE): EventSource cannot set headers, so there the
-token is accepted as ``?token=`` (query param, GET only).  Every request must also
-carry a matching ``Host`` header (DNS-rebinding protection).
+Binds to 127.0.0.1 only.  Every request that is not plain GET must carry
+``x-ultraai: <token>`` — the per-install token from ``token.txt`` in the config dir
+(injected into index.html as a meta tag) — compared with hmac.compare_digest, so a
+browser page from another site cannot add that header without a CORS preflight, which
+we never allow.  The SSE stream ``GET /api/events`` takes the same token in the header
+too (the web client consumes it with fetch streaming, not EventSource), so the token
+never appears in a URL or query string: with ``trace`` logging, request lines (including
+query strings) end up in the log ring shown in the app, so query strings must stay
+secret-free.  Every request must also carry a matching ``Host`` header
+(DNS-rebinding protection).
 """
 
 from __future__ import annotations
@@ -43,6 +46,7 @@ WEB = Path(__file__).with_name("web")
 
 MAX_UPLOAD = 2 * 1024 ** 3  # 2 GiB per POST /api/songs/files
 MAX_EVENT_CLIENTS = 20      # concurrent GET /api/events streams
+EVENT_QUEUE_MAX = 100       # events buffered per SSE client; drop-oldest on overflow
 EVENT_TICK = 1.0            # s: the event watcher polls the library rev + log cursor this often
 EVENT_PING = 15.0           # s without any event before the stream sends a ": ping" comment
 
@@ -87,8 +91,22 @@ class EventBus:
         return rev, payload, entries
 
     def _broadcast(self, item: tuple):
+        # Per-client queues are bounded so a slow client cannot accumulate full song
+        # payloads.  On overflow the *oldest* event is dropped: every `songs` event is a
+        # full snapshot (the next one re-syncs the client) and a dropped `log` batch is
+        # re-delivered after a reconnect via the `after` cursor - lossy by design.
         for q in list(self.clients):
-            q.put_nowait(item)
+            try:
+                q.put_nowait(item)
+            except asyncio.QueueFull:
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    q.put_nowait(item)
+                except asyncio.QueueFull:  # pragma: no cover - needs a racing consumer
+                    pass
 
     async def _watch(self):
         while True:
@@ -108,6 +126,57 @@ class EventBus:
                 raise
             except Exception:  # noqa: BLE001 - the watcher must never die
                 log.exception("event watcher failed")
+
+
+class Guard:
+    """PR #10 hardening (Host check, upload limit, ``x-ultraai`` token on mutating
+    routes) as a plain-ASGI middleware.  It must NOT be BaseHTTPMiddleware: the SSE
+    endpoint polls ``Request.is_disconnected()`` on every quiet tick to reap gone
+    clients, and behind BaseHTTPMiddleware that probe — a receive call inside a
+    pre-cancelled scope — dies inside the middleware's internal task group and can
+    never see the server's ``http.disconnect``.  A raw wrapper passes ``receive``
+    through unchanged, so the probe reaches the real connection state."""
+
+    def __init__(self, app, token: str, allowed_hosts: set[str], max_upload: int):
+        self.app, self.token, self.allowed_hosts, self.max_upload = app, token, allowed_hosts, max_upload
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        h = {k.decode("latin-1").lower(): v.decode("latin-1")
+             for k, v in scope.get("headers") or []}
+        method, path = scope["method"], scope["path"]
+        # DNS-rebinding protection: only our own host names on our port are accepted
+        host = (h.get("host") or "").strip().lower()
+        if host not in self.allowed_hosts:
+            log.warning("refused %s %s with Host %r", method, path, host or "<missing>")
+            await JSONResponse({"detail": "unexpected Host header"}, status_code=403)(scope, receive, send)
+            return
+        if (method == "POST" and path == "/api/songs/files"
+                and (cl := h.get("content-length", "")).isdigit() and int(cl) > self.max_upload):
+            log.warning("refused %s %s: Content-Length %s over the limit", method, path, cl)
+            await JSONResponse({"detail": f"upload too large (max {self.max_upload // 2**30} GiB)"},
+                               status_code=413)(scope, receive, send)
+            return
+        if method not in ("GET", "HEAD", "OPTIONS"):
+            sent = h.get("x-ultraai", "").encode("utf-8", "ignore")
+            if not hmac.compare_digest(sent, self.token.encode("utf-8")):
+                log.warning("refused %s %s without a valid x-ultraai token", method, path)
+                await JSONResponse({"detail": "missing or wrong x-ultraai token"},
+                                   status_code=403)(scope, receive, send)
+                return
+        t0 = time.time()
+
+        async def guarded_send(message):
+            if message["type"] == "http.response.start":
+                log.log(TRACE, "%s %s -> %s (%.0f ms)", method, path, message["status"],
+                        1000 * (time.time() - t0))
+                if message["status"] >= 500:
+                    log.error("%s %s -> %s", method, path, message["status"])
+            await send(message)
+
+        await self.app(scope, receive, guarded_send)
 
 
 # ---------------------------------------------------------------- processing queue
@@ -289,30 +358,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     app.state.lib, app.state.queue, app.state.settings = lib, queue, settings
     app.state.token, app.state.port, app.state.bus = token, port, bus
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
-
-    @app.middleware("http")
-    async def guard(request: Request, call_next):
-        # DNS-rebinding protection: only our own host names on our port are accepted
-        host = (request.headers.get("host") or "").strip().lower()
-        if host not in allowed_hosts:
-            log.warning("refused %s %s with Host %r", request.method, request.url.path, host or "<missing>")
-            return JSONResponse({"detail": "unexpected Host header"}, status_code=403)
-        if (request.method == "POST" and request.url.path == "/api/songs/files"
-                and (cl := request.headers.get("content-length", "")).isdigit() and int(cl) > MAX_UPLOAD):
-            log.warning("refused %s %s: Content-Length %s over the limit", request.method, request.url.path, cl)
-            return JSONResponse({"detail": f"upload too large (max {MAX_UPLOAD // 2**30} GiB)"}, status_code=413)
-        if request.method not in ("GET", "HEAD", "OPTIONS"):
-            sent = request.headers.get("x-ultraai", "").encode("utf-8", "ignore")
-            if not hmac.compare_digest(sent, token.encode("utf-8")):
-                log.warning("refused %s %s without a valid x-ultraai token", request.method, request.url.path)
-                return JSONResponse({"detail": "missing or wrong x-ultraai token"}, status_code=403)
-        t = time.time()
-        resp = await call_next(request)
-        log.log(TRACE, "%s %s -> %s (%.0f ms)", request.method, request.url.path, resp.status_code,
-                1000 * (time.time() - t))
-        if resp.status_code >= 500:
-            log.error("%s %s -> %s", request.method, request.url.path, resp.status_code)
-        return resp
+    app.add_middleware(Guard, token=token, allowed_hosts=allowed_hosts, max_upload=MAX_UPLOAD)
 
     def get_state(sid: str) -> SongState:
         try:
@@ -336,16 +382,18 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         return songs_payload()
 
     @app.get("/api/events")
-    async def events(request: Request, token: str = "", after: int = 0):
+    async def events(request: Request, after: int = 0):
         """SSE stream (text/event-stream): a `songs` event with the full /api/songs payload
         whenever the library changes, and `log` events with new ring-buffer entries.
 
-        EventSource cannot set headers, so the per-install token is accepted as ?token=
-        on this GET only (hmac.compare_digest).  The log cursor resumes from Last-Event-ID
-        (sent automatically by the browser on reconnect) or ?after=."""
-        if not hmac.compare_digest((token or "").encode("utf-8", "ignore"), app.state.token.encode("utf-8")):
-            log.warning("refused GET /api/events without a valid ?token=")
-            return JSONResponse({"detail": "missing or wrong token"}, status_code=403)
+        Authenticated with the x-ultraai header like every other route (the web client
+        owns the reconnects, so it can use fetch streaming instead of EventSource - the
+        token must never reach the URL: trace logging puts query strings into the log
+        ring).  The log cursor resumes from Last-Event-ID or ?after=."""
+        sent = request.headers.get("x-ultraai", "").encode("utf-8", "ignore")
+        if not hmac.compare_digest(sent, app.state.token.encode("utf-8")):
+            log.warning("refused GET /api/events without a valid x-ultraai token")
+            return JSONResponse({"detail": "missing or wrong x-ultraai token"}, status_code=403)
         last_id = (request.headers.get("last-event-id") or "").strip()
         if last_id.isdigit():
             after = max(after, int(last_id))
@@ -353,22 +401,36 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
             return JSONResponse({"detail": "too many event clients"}, status_code=503)
 
         async def stream():
-            queue: asyncio.Queue = asyncio.Queue()
-            bus.clients.add(queue)  # removed in the finally, also on client disconnect
+            q: asyncio.Queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
             sent_log = after
             try:
-                # initial state: the full library, then the log backlog since the cursor
-                yield _sse("songs", await run_in_threadpool(songs_payload))
+                # Initial state: snapshot the library and log backlog *before*
+                # registering the queue - a broadcast racing the snapshot would be
+                # delivered after (and is thus staler than) the snapshot we just sent.
+                payload = await run_in_threadpool(songs_payload)
                 backlog = await run_in_threadpool(ring.since, after, TRACE)
                 if backlog:
                     sent_log = backlog[-1]["id"]
+                bus.clients.add(q)  # removed in the finally, also on client disconnect
+                yield _sse("songs", payload)
+                if backlog:
                     yield _sse("log", backlog, event_id=sent_log)
+                idle = 0.0
                 while True:
                     try:
-                        kind, data = await asyncio.wait_for(queue.get(), timeout=EVENT_PING)
+                        kind, data = await asyncio.wait_for(q.get(), timeout=EVENT_TICK)
                     except asyncio.TimeoutError:
-                        yield ": ping\n\n"  # keep the connection alive through proxies
+                        # Relying on Starlette cancelling the generator alone proves
+                        # unreliable, so poll the connection explicitly: a client that
+                        # went away costs at most one tick of bus.clients memory.
+                        if await request.is_disconnected():
+                            break
+                        idle += EVENT_TICK
+                        if idle >= EVENT_PING:
+                            idle = 0.0
+                            yield ": ping\n\n"  # keep the connection alive through proxies
                         continue
+                    idle = 0.0
                     if kind == "log":
                         data = [e for e in data if e["id"] > sent_log]  # dedup vs the backlog
                         if not data:
@@ -378,7 +440,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
                     else:
                         yield _sse("songs", data)
             finally:
-                bus.clients.discard(queue)
+                bus.clients.discard(q)
 
         return StreamingResponse(stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

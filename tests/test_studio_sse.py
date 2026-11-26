@@ -1,8 +1,14 @@
 """GET /api/events (SSE): `songs` events when the library changes, `log` events for new
-ring-buffer entries, ?token= query auth (EventSource cannot set headers), Last-Event-ID /
-?after= resume of the log cursor, the client cap and queue cleanup on disconnect.
+ring-buffer entries, x-ultraai header auth (no token in the URL - query strings surface
+in trace-level request logs), Last-Event-ID / ?after= resume of the log cursor, the
+client cap and bounded per-client queues, and deterministic disconnect cleanup: the
+endpoint polls `request.is_disconnected()` on every quiet tick and drops its queue
+there, so cleanup does not depend on the ASGI server cancelling the generator.
 
-Everything runs on a tiny fake library in tmp_path — no songs/ folder, no network, no SSH."""
+Everything runs on a tiny fake library in tmp_path - no songs/ folder, no network, no
+SSH.  The disconnect cleanup is driven through a raw ASGI (scope, receive, send) call:
+TestClient never reports a disconnect for an intentionally endless stream, which is
+exactly how the flake this replaces was born."""
 
 import asyncio
 import json
@@ -16,13 +22,14 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from ultraai.studio.app import MAX_EVENT_CLIENTS, create_app  # noqa: E402
+from ultraai.studio.app import EVENT_QUEUE_MAX, MAX_EVENT_CLIENTS, EventBus, create_app  # noqa: E402
 from ultraai.studio.config import Settings  # noqa: E402
 from ultraai.studio.logs import TRACE, ring  # noqa: E402
 
 PORT = 8766
 TOKEN = "test-token-sse-0123456789abcdef"
 BASE = f"http://127.0.0.1:{PORT}"
+AUTH = {"x-ultraai": TOKEN}
 
 
 @pytest.fixture
@@ -57,6 +64,12 @@ def studio(cfg, logcap):
     app = create_app(settings, processor_factory=lambda: None, start_queue=False, token=TOKEN, port=PORT)
     with TestClient(app, base_url=BASE) as client:
         yield client
+
+
+def sse_app(tmp_path):
+    """Same app as the `studio` fixture, but for raw-ASGI calls (no TestClient lifespan)."""
+    settings = Settings(library=str(tmp_path / "lib"), processor="local")
+    return create_app(settings, processor_factory=lambda: None, start_queue=False, token=TOKEN, port=PORT)
 
 
 class SSEReader:
@@ -114,24 +127,25 @@ class SSEReader:
         return out
 
 
-# ---------------------------------------------------------------- token (query param, GET only)
-def test_events_token_via_query_param_only(studio):
-    assert studio.get("/api/events").status_code == 403                       # missing
-    assert studio.get("/api/events", params={"token": "wrong"}).status_code == 403
-    # the x-ultraai header does not open the SSE GET (EventSource cannot set headers)
-    assert studio.get("/api/events", headers={"x-ultraai": TOKEN}).status_code == 403
-    with studio.stream("GET", "/api/events", params={"token": TOKEN}) as resp:
+# ---------------------------------------------------------------- token (header, GET too)
+def test_events_token_via_x_ultraai_header_only(studio):
+    assert studio.get("/api/events").status_code == 403                       # missing header
+    assert studio.get("/api/events", headers={"x-ultraai": "wrong"}).status_code == 403
+    # the old query-param path is gone for good: a token in the URL would surface in
+    # trace-level access logs (uvicorn logs the query string)
+    assert studio.get("/api/events", params={"token": TOKEN}).status_code == 403
+    with studio.stream("GET", "/api/events", headers=AUTH) as resp:
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("text/event-stream")
     # header auth still guards the non-GET routes
     assert studio.post("/api/songs/nope/reviewed").status_code == 403
-    assert studio.post("/api/songs/nope/reviewed", headers={"x-ultraai": TOKEN}).status_code == 404
+    assert studio.post("/api/songs/nope/reviewed", headers=AUTH).status_code == 404
 
 
 # ---------------------------------------------------------------- songs events
 def test_songs_event_on_library_change(studio):
     lib = studio.app.state.lib
-    with studio.stream("GET", "/api/events", params={"token": TOKEN}) as resp:
+    with studio.stream("GET", "/api/events", headers=AUTH) as resp:
         assert resp.status_code == 200
         r = SSEReader(resp)
         ev, _eid, data = r.next(5)                      # initial songs event: empty library
@@ -165,7 +179,7 @@ def test_songs_event_on_library_change(studio):
 
 # ---------------------------------------------------------------- log events + cursor resume
 def test_log_event_on_new_entry(studio):
-    with studio.stream("GET", "/api/events", params={"token": TOKEN}) as resp:
+    with studio.stream("GET", "/api/events", headers=AUTH) as resp:
         r = SSEReader(resp)
         r.next(5)                                       # initial songs event
         marker = f"hello-sse-{time.time()}"
@@ -195,8 +209,7 @@ def test_log_resume_from_last_event_id_and_after_param(studio):
     assert a < b < c
 
     def ids_from(headers=None, params=None):
-        params = {"token": TOKEN, **(params or {})}
-        with studio.stream("GET", "/api/events", params=params, headers=headers or {}) as resp:
+        with studio.stream("GET", "/api/events", params=params, headers={**AUTH, **(headers or {})}) as resp:
             assert resp.status_code == 200
             events = SSEReader(resp).collect(3)
         return {e["id"] for ev, _eid, data in events if ev == "log" for e in (data or [])}
@@ -213,24 +226,99 @@ def test_event_client_cap(studio):
     dummies = [asyncio.Queue() for _ in range(MAX_EVENT_CLIENTS)]
     bus.clients.update(dummies)
     try:
-        r = studio.get("/api/events", params={"token": TOKEN})
+        r = studio.get("/api/events", headers=AUTH)
         assert r.status_code == 503
     finally:
         for d in dummies:
             bus.clients.discard(d)
 
 
-def test_client_queue_removed_on_disconnect(studio):
-    bus = studio.app.state.bus
-    with studio.stream("GET", "/api/events", params={"token": TOKEN}) as resp:
-        assert resp.status_code == 200
-        r = SSEReader(resp)
-        assert r.next(5)[0] == "songs"
-        assert len(bus.clients) == 1
-    deadline = time.time() + 5
-    while time.time() < deadline and bus.clients:
-        time.sleep(0.05)
+def test_client_queue_is_bounded_drop_oldest():
+    """A slow client cannot accumulate events: the oldest are dropped on overflow (every
+    `songs` event is a full snapshot, so the newest event is always the important one)."""
+    bus = EventBus(lib=None, songs_payload=None)
+    q: asyncio.Queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
+    bus.clients.add(q)
+    for k in range(EVENT_QUEUE_MAX + 10):
+        bus._broadcast(("songs", [k]))
+    assert q.qsize() == EVENT_QUEUE_MAX
+    assert q.get_nowait() == ("songs", [10])      # the 10 oldest were dropped, newest kept
+
+
+# ---------------------------------------------------------------- disconnect cleanup (raw ASGI)
+def _drive_sse(app, receive):
+    """Call the app as a live server would; receive controls what the ASGI side sees."""
+    frames: list[dict] = []
+
+    async def send(message):
+        frames.append(message)
+
+    scope = {"type": "http", "http_version": "1.1", "method": "GET", "path": "/api/events",
+             "raw_path": b"/api/events", "root_path": "", "scheme": "http", "query_string": b"",
+             "headers": [(b"host", f"127.0.0.1:{PORT}".encode()), (b"x-ultraai", TOKEN.encode())],
+             "client": ("testclient", 50000), "server": ("127.0.0.1", PORT)}
+
+    async def scenario():
+        try:
+            await asyncio.wait_for(app(scope, receive, send), timeout=30)
+        except asyncio.TimeoutError:
+            raise AssertionError("the SSE stream did not end after the client went away")
+
+    t0 = time.time()
+    asyncio.run(scenario())
+    body = b"".join(m.get("body", b"") for m in frames if m["type"] == "http.response.body")
+    return time.time() - t0, [m for m in frames if m["type"] == "http.response.start"][0]["status"], body
+
+
+def test_client_queue_removed_on_disconnect(tmp_path, logcap):
+    """The normal path: the server relays http.disconnect, the generator is cancelled and
+    the queue is gone from bus.clients - no polling threads, no flake."""
+    app = sse_app(tmp_path)
+    bus = app.state.bus
+    seen = {"request": False}
+
+    async def receive():
+        if not seen["request"]:
+            seen["request"] = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        return {"type": "http.disconnect"}
+
+    dt, status, body = _drive_sse(app, receive)
+    assert status == 200                                # the cancel may beat the first frame
     assert not bus.clients
+    assert dt < 5, f"disconnect cleanup took {dt:.2f} s"
+
+
+def test_client_queue_removed_on_disconnect_ping_path(tmp_path, logcap):
+    """The path the review was about: the server's cancellation does not reach the
+    generator (Starlette's disconnect listener is parked), so only the endpoint's own
+    `request.is_disconnected()` check on the quiet tick drops the queue."""
+    app = sse_app(tmp_path)
+    bus = app.state.bus
+    seen = {"request": False, "parked": False}
+    parked = asyncio.Event()
+
+    async def receive():
+        if not seen["request"]:
+            seen["request"] = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        if not seen["parked"]:      # the first caller parks: Starlette's cancel listener
+            seen["parked"] = True
+            await parked.wait()     # (it never learns about the disconnect in this test)
+            return {"type": "http.disconnect"}
+        return {"type": "http.disconnect"}
+
+    def cleanup():
+        parked.set()                # un-park the listener at teardown
+
+    try:
+        dt, status, body = _drive_sse(app, receive)
+        assert status == 200 and b"event: songs" in body
+        assert not bus.clients
+        # the endpoint noticed on its first quiet tick (EVENT_TICK = 1 s)
+        assert dt < 6, f"disconnect cleanup took {dt:.2f} s"
+    finally:
+        cleanup()
 
 
 # ---------------------------------------------------------------- backward compat
