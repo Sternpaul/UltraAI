@@ -30,7 +30,7 @@ from .config import Settings, atomic_write, load_token
 from .doc import DocError, doc_to_song, song_to_doc
 from .logs import TRACE, LEVELS, ring
 from .processors import Cancelled
-from .store import Library, SongState, VersionConflict
+from .store import GOLDEN_CUSTOM, GOLDEN_PRESETS, GOLDEN_SHARE_MAX, Library, SongState, VersionConflict
 
 log = logging.getLogger("ultraai.studio")
 
@@ -176,6 +176,7 @@ class DocIn(BaseModel):
     doc: dict
     note: str = "edit"
     base_version: int = 0               # optimistic concurrency: must equal the current doc_version
+    golden: dict | None = None          # optional {"preset": ..., "share": ...} golden-notes setting
 
 
 class KeyIn(BaseModel):
@@ -184,6 +185,18 @@ class KeyIn(BaseModel):
 
 def issue_key(i: dict) -> str:
     return f"{i.get('kind')}:{i.get('start', 0):.2f}:{(i.get('text') or '')[:24]}"
+
+
+def check_golden(g: dict) -> tuple[str, float]:
+    """Validate a PUT /doc ``golden`` field -> (preset, share); 400 on bad input."""
+    preset = g.get("preset", "")
+    share = g.get("share", 0.04)
+    if preset not in ("", GOLDEN_CUSTOM, *GOLDEN_PRESETS):
+        raise HTTPException(400, f"unknown golden preset {preset!r}")
+    if isinstance(share, bool) or not isinstance(share, (int, float)) \
+            or not 0 < float(share) <= GOLDEN_SHARE_MAX:
+        raise HTTPException(400, f"golden share must be a number in (0, {GOLDEN_SHARE_MAX}]")
+    return preset, float(share)
 
 
 def create_app(settings: Settings, processor_factory=None, start_queue: bool = True,
@@ -242,7 +255,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         d = {k: getattr(st, k) for k in ("id", "artist", "title", "language", "state", "stage", "error",
                                          "source", "created", "updated", "priority", "issues",
                                          "lyrics_source", "video", "cover", "progress", "lyrics_info",
-                                         "options")}
+                                         "options", "golden_preset", "golden_share")}
         d["open_issues"] = max(0, st.issues - len(st.dismissed))
         # the song-level check stays visible in the list until its issue is marked OK
         d["warning"] = "" if any(k.startswith("song_check:") for k in st.dismissed) else st.warning
@@ -429,7 +442,8 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
                 "vocals": f"{base}/vocals" if (sd / "vocals.ogg").exists() else None,
                 "editor": f"{base}/editor" if (sd / "editor.json").exists() else None,
                 "lyrics_source": side.get("lyrics_source", st.lyrics_source),
-                "lyrics_info": side.get("lyrics") or st.lyrics_info or {}}
+                "lyrics_info": side.get("lyrics") or st.lyrics_info or {},
+                "golden": {"preset": st.golden_preset, "share": st.golden_share}}
 
     @app.put("/api/songs/{sid}/doc")
     def put_doc(sid: str, body: DocIn):
@@ -441,10 +455,13 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
             song = doc_to_song(body.doc)
         except (DocError, KeyError, TypeError, ValueError) as exc:
             raise HTTPException(400, f"invalid song: {exc}") from None
+        golden = check_golden(body.golden) if body.golden is not None else None  # 400 on bad preset/share
         try:
             st = lib.bump_doc_version(sid, body.base_version)  # 409 on a stale base_version
         except VersionConflict as exc:
             raise HTTPException(409, f"the song changed on the server ({exc}); reload to get it") from None
+        if golden is not None:
+            st = lib.update(sid, golden_preset=golden[0], golden_share=golden[1])
         text = dumps(song)
         lib.save_version(sid, text, body.note or "edit")
         atomic_write(txt, text.encode("utf-8"))

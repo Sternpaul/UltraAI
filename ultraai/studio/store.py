@@ -35,6 +35,12 @@ AUDIO_EXT = {".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wav", ".aac", ".webm"}
 STATES = ("downloading", "queued", "processing", "needs_lyrics", "needs_review", "reviewed",
           "imported", "error")
 
+# Golden-notes presets the editor offers (mirror of PRESETS ids in web/golden.js);
+# "custom" means the user toggled individual notes by hand, "" = nothing chosen yet.
+GOLDEN_PRESETS = ("hard", "held", "high", "mix", "none")
+GOLDEN_CUSTOM = "custom"
+GOLDEN_SHARE_MAX = 0.5
+
 
 class VersionConflict(Exception):
     """PUT /doc with a stale base_version: the doc changed on the server in between."""
@@ -69,6 +75,8 @@ class SongState:
     cover: str = ""                     # cover image (USDX #COVER), if any
     doc_version: int = 0                # bumped on every doc save and reprocess (optimistic locking)
     warning: str = ""                   # song-level check from processing ("Lyrics may not match the singing")
+    golden_preset: str = ""             # golden-notes preset id, "custom" (hand-edited) or "" (none chosen)
+    golden_share: float = 0.04          # fraction of notes that are golden
 
     @classmethod
     def from_dict(cls, d: dict) -> "SongState":

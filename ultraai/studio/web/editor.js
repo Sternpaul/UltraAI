@@ -4,7 +4,7 @@ import {
   MIN_NOTE, applyLineText, curveOffset, curvePitch, flatten, isCont, lineEnd, lineStart, lineText,
   lineToEditText, normalize, lineAt, copyLineNotes,
 } from "./model.js";
-import { PRESETS, applyPreset } from "./golden.js";
+import { PRESETS, applyPreset, goldenLabel, nextGoldenState, normalizeGolden } from "./golden.js";
 import { lyricIssues } from "./lyricsdiff.js";
 import { pitchIssues } from "./pitchcheck.js";
 import { findRepeats, propagate, retimeOnto, spanOf } from "./repeats.js";
@@ -54,6 +54,7 @@ export async function openEditor(root, id, crumbs) {
     issues: data.issues.map(i => ({ ...i })).sort(byTime), extraNotes: new Set(), missingMarks: [],
     currentIssue: null, loop: null, band: null, hoverBreak: null, duration: 0, curveOffset: 0,
     pitchSpan: { lo: 0, hi: 12 },
+    golden: normalizeGolden(data.golden),  // per-song golden-notes setting, saved with the doc
   };
   const undo = [], redo = [];
   const serverIssues = ed.issues;
@@ -119,12 +120,24 @@ export async function openEditor(root, id, crumbs) {
   const saveEl = h("span", { class: "savestate", role: "status" }, "Saved");
   const reviewedBtn = btn(info.state === "reviewed" ? "✓ Done" : "Mark as done", "Mark this song as reviewed", () => markReviewed(),
     { class: info.state === "reviewed" ? "" : "primary" });
-  const goldenSel = h("select", { "aria-label": "Golden notes preset", title: "Choose where the golden notes go (whole song, undoable)",
-      onchange: e => { if (e.target.value) goldenPreset(e.target.value); e.target.value = ""; } },
+  const goldenSel = h("select", { "aria-label": "Golden notes preset", title: "Choose where the golden notes go (whole song, undoable). The current choice is shown next to it and saved with the song.",
+      onchange: e => { if (e.target.value) goldenPreset(e.target.value); } },
     h("option", { value: "" }, "★ Golden notes…"),
     ...PRESETS.map(([v, label, why]) => h("option", { value: v, title: why }, label)));
-  const goldenShare = h("select", { "aria-label": "Share of golden notes", title: "How many notes are golden" },
+  const goldenShare = h("select", { "aria-label": "Share of golden notes", title: "How many notes are golden",
+      onchange: e => goldenShareChanged(Number(e.target.value)) },
     ...[["0.02", "2 %"], ["0.04", "4 %"], ["0.06", "6 %"], ["0.08", "8 %"]].map(([v, l]) => h("option", { value: v, selected: v === "0.04" }, l)));
+  const goldenLabelEl = h("span", { class: "goldenlabel", title: "Current golden-notes setting (saved with the song)" }, "");
+  function updateGoldenUi() {  // the select shows the current preset; the label shows "★ <preset> · <share>%" / "★ custom"
+    goldenSel.value = ed.golden.preset === "custom" ? "" : ed.golden.preset;
+    const sv = String(ed.golden.share);
+    if (![...goldenShare.options].some(o => o.value === sv)) {
+      goldenShare.append(h("option", { value: sv }, `${(ed.golden.share * 100).toFixed(0)} %`));
+    }
+    goldenShare.value = sv;
+    goldenLabelEl.textContent = goldenLabel(ed.golden);
+  }
+  updateGoldenUi();
   const voiceSel = doc.voices.length > 1 ? h("select", { "aria-label": "Singer", onchange: e => switchVoice(Number(e.target.value)) },
     ...doc.voices.map((v, k) => h("option", { value: String(k) }, `Singer ${v.voice}`))) : null;
 
@@ -144,7 +157,7 @@ export async function openEditor(root, id, crumbs) {
       btn("Copy to repeats", "Give every repeat of this line the same pitches and golden notes (C)", () => copyRepeats()),
       btn("New line", "Start a new line at the selected note (B)", () => breakLine()),
       btn("Join", "Join the line with the next (Shift+B)", () => joinLine())),
-    h("div", { class: "group" }, goldenSel, goldenShare),
+    h("div", { class: "group" }, goldenSel, goldenShare, goldenLabelEl),
     h("div", { class: "group" }, undoBtn, redoBtn, voiceSel),
     h("span", { class: "spacer" }),
     h("div", { class: "group" }, saveEl, btn("USDB", "The txt ready for uploading to USDB (with the YouTube and cover links)", () => usdbDialog()),
@@ -291,10 +304,12 @@ export async function openEditor(root, id, crumbs) {
   function setKind(kind) {
     const s = needSel(); if (!s.length) return;
     const all = s.every(({ n }) => n.kind === kind);  // pressing again switches back to normal
+    if (kind === "*" || s.some(({ n }) => n.kind === "*")) markGoldenCustom();  // hand-edit -> "custom"
     remember(); for (const { n } of s) n.kind = all ? ":" : kind; changed();
   }
   function setNormal() {
     const s = needSel(); if (!s.length) return;
+    if (s.some(({ n }) => n.kind === "*")) markGoldenCustom();
     remember(); for (const { n } of s) n.kind = ":"; changed();
   }
   function deleteNotes() {
@@ -338,12 +353,27 @@ export async function openEditor(root, id, crumbs) {
     line.break = prevEnd + Math.min(0.3, (rest[0].start - prevEnd) / 2);
     changed();
   }
-  function goldenPreset(preset) {
+  function goldenPreset(preset, share = Number(goldenShare.value)) {
     remember();
-    const n = applyPreset(ed.lines, preset, ed.editor, Number(goldenShare.value));
+    const n = applyPreset(ed.lines, preset, ed.editor, share);
+    ed.golden = nextGoldenState(ed.golden, { type: "preset", preset, share });  // persisted with the next save
+    updateGoldenUi();
     changed(false);
     const label = PRESETS.find(p => p[0] === preset)?.[1] ?? preset;
     toast(preset === "none" ? "Golden notes removed" : `Golden notes: ${label} – ${n} syllable${n === 1 ? "" : "s"}`);
+  }
+  function goldenShareChanged(share) {
+    if (ed.golden.preset && ed.golden.preset !== "custom") {
+      goldenPreset(ed.golden.preset, share);  // re-apply the current preset with the new share
+    } else {
+      ed.golden = nextGoldenState(ed.golden, { type: "preset", preset: ed.golden.preset, share });
+      updateGoldenUi();
+      changed();
+    }
+  }
+  function markGoldenCustom() {  // a note was golden-toggled by hand: no preset describes the song anymore
+    ed.golden = nextGoldenState(ed.golden, { type: "toggle" });  // preset = "custom", share kept
+    updateGoldenUi();
   }
   /** Syllables, pitches and kinds of ``src`` onto ``dst``, keeping ``dst``'s own (sung) word timing. */
   function overwriteLine(src, dst) { dst.notes = retimeOnto(src.notes, dst.notes); }
@@ -575,7 +605,7 @@ export async function openEditor(root, id, crumbs) {
     if (!dirty || saving) return;
     saving = true; dirty = false; setSave("saving");
     try {
-      const r = await api(`/api/songs/${id}/doc`, { method: "PUT", json: { doc, note: "edit", base_version: baseVersion } });
+      const r = await api(`/api/songs/${id}/doc`, { method: "PUT", json: { doc, note: "edit", base_version: baseVersion, golden: ed.golden } });
       baseVersion = r.doc_version ?? baseVersion + 1;
       setSave(dirty ? "unsaved" : "saved", (r.problems || []).join("\n"));
       if (r.problems?.length) toast(`Saved with warnings: ${r.problems[0]}`);
