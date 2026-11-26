@@ -32,10 +32,23 @@ def test_expand_ordinals_and_decimals():
     assert expand_numbers("1st", "en") == "first"
     assert expand_numbers("2nd 3rd 21st", "en") == "second third twenty-first"
     assert expand_numbers("3.5", "en") == "three point five"
+    # en keeps the digit-wise reading for a 3-digit "fraction" group (dot-thousands)
+    assert expand_numbers("10.000", "en") == "ten point zero zero zero"
 
 
 def test_expand_german():
     assert expand_numbers("ich bin 22", "de") == "ich bin zweiundzwanzig"
+
+
+def test_expand_german_decimals():
+    # num2words phrases it per language, not the English "point"
+    assert expand_numbers("3.5", "de") == "drei Komma fünf"
+    # dot-thousands ("10.000" = ten thousand in de) must stay unchanged, not be read
+    # as "zehn Komma null null null"
+    assert expand_numbers("10.000", "de") == "10.000"
+    assert expand_numbers("an 1.500 Umfragen", "de") == "an 1.500 Umfragen"
+    # comma decimals are left alone (no de comma-decimal support)
+    assert expand_numbers("3,5", "de") == "3,5"
 
 
 def test_unsupported_lang_unchanged():

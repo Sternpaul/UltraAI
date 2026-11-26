@@ -419,6 +419,7 @@ _INT_CORE = re.compile(r"\d{1,3}(?:,\d{3})+|\d+")      # "1,000" or "22"
 _ORD_CORE = re.compile(r"(\d+)(?:st|nd|rd|th)", re.IGNORECASE)  # "21st"
 _DEC_CORE = re.compile(r"(\d+)\.(\d+)")                # "3.5"
 _n2w_cache: dict[tuple[int, str, str], str | None] = {}
+_n2w_dec_cache: dict[tuple[str, str], str | None] = {}
 
 
 def _n2w_lang(lang: str) -> str | None:
@@ -442,6 +443,18 @@ def _n2w(n: int, nlang: str, to: str) -> str | None:
     return _n2w_cache[key]
 
 
+def _n2w_dec(text: str, nlang: str) -> str | None:
+    """num2words reading of a plain dot-decimal, phrased per language (de: "drei Komma fünf")."""
+    key = (text, nlang)
+    if key not in _n2w_dec_cache:
+        try:
+            from num2words import num2words
+            _n2w_dec_cache[key] = num2words(float(text), lang=nlang) or None
+        except Exception:  # no decimal phrasing for this language
+            _n2w_dec_cache[key] = None
+    return _n2w_dec_cache[key]
+
+
 def _expand_token(tok: str, nlang: str) -> str:
     """One whitespace-free token -> spoken words, or unchanged when it is not a plain numeral."""
     if _CURRENCY.search(tok):  # "$5" stays "$5"
@@ -450,11 +463,17 @@ def _expand_token(tok: str, nlang: str) -> str:
     lead, core, tail = m.group(1), m.group(2), m.group(3)
     out = None
     if _DEC_CORE.fullmatch(core):
-        whole = _n2w(int(_DEC_CORE.fullmatch(core).group(1)), nlang, "cardinal")
-        frac = _DEC_CORE.fullmatch(core).group(2)
-        if whole:
-            out = whole + " point " + " ".join(
-                _n2w(int(d), nlang, "cardinal") or d for d in frac)
+        whole_s, frac = _DEC_CORE.fullmatch(core).groups()
+        if len(frac) == 3:
+            # a 3-digit "fraction" group is a dot-thousands separator (de: "10.000");
+            # only en reads it as a decimal, non-en keeps the digits unchanged
+            if nlang == "en":
+                whole = _n2w(int(whole_s), nlang, "cardinal")
+                if whole:
+                    out = whole + " point " + " ".join(
+                        _n2w(int(d), nlang, "cardinal") or d for d in frac)
+        else:
+            out = _n2w_dec(core, nlang)  # num2words phrases decimals per language
     elif _ORD_CORE.fullmatch(core):
         out = _n2w(int(_ORD_CORE.fullmatch(core).group(1)), nlang, "ordinal")
     elif _INT_CORE.fullmatch(core):
@@ -474,8 +493,9 @@ def expand_numbers(text: str, lang: str = "en") -> str:
     carry words too, or a digit lands on one note while its sung syllables stay empty.
     Per token: integers 0..9999 (optional thousand separators) -> cardinal words, plain
     1000..2099 prefer the year reading ("1999" -> "nineteen ninety-nine") when num2words
-    supports it, ordinals ("1st") -> ordinal words, decimals ("3.5" -> "three point five");
-    everything else ("$5", "COVID-19", "3D") is unchanged.  ``lang`` is our ISO 639-1 code
+    supports it, ordinals ("1st") -> ordinal words, decimals via num2words per language
+    ("3.5" -> "three point five", "drei Komma fünf"); everything else ("$5", "COVID-19",
+    "3D", non-en dot-thousands "10.000") is unchanged.  ``lang`` is our ISO 639-1 code
     (or a #LANGUAGE value); unsupported languages return the text unchanged.  Whitespace
     and line structure are preserved exactly.
     """
