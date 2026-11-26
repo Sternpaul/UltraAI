@@ -2,8 +2,7 @@
 
 Turns songs into [UltraStar Deluxe](https://usdx.eu) karaoke files automatically: lyrics,
 timing, line breaks and notes. Lyrics come from a sidecar file, LRCLIB, the audio file's own
-tags, or — as a flagged last resort — YouTube captions; numerals are spelled out (`22` →
-`twenty-two`) so they align with the sung words. The lyrics are treated as the truth; the
+tags, so they align with the sung words. The lyrics are treated as the truth; the
 audio decides *when* each syllable is sung and at which pitch. A risk model plus pitch
 double-checks mark the places where the machine is unsure, and **UltraAI Studio** takes you
 straight there to fix them.
