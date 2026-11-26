@@ -1,4 +1,4 @@
-"""Sharded worker locks, ULTRAAI_MAX_JOBS, refcounted background pause, atomic stage_rates.
+"""Sharded worker locks, ULTRAAI_MAX_JOBS, crash-safe background pause, atomic stage_rates.
 
 Threading + fakes only: no real audio, no real flock (fcntl is POSIX-only; the worker runs on
 the Linux server, the tests run anywhere).  ``worker._acquire``/``worker._release`` are faked
@@ -63,6 +63,7 @@ def cache(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "GLOBAL_LOCK", tmp_path / "worker.lock")
     monkeypatch.setattr(worker, "RATES_FILE", tmp_path / "stage_rates.json")
     monkeypatch.setattr(worker, "PAUSED_FILE", tmp_path / "background.paused")
+    monkeypatch.setattr(worker, "PRESENCE_DIR", tmp_path / "locks" / "background")
     return tmp_path
 
 
@@ -271,41 +272,95 @@ def test_process_same_audio_serializes(fake_flock, cache, monkeypatch):
     assert conc.max == 1
 
 
-# ------------------------------------------------------------------ refcounted pause/resume
+# ------------------------------------------------------------------ crash-safe pause/resume
 
 
-def test_background_pause_refcount_concurrent(fake_flock, cache, monkeypatch):
-    """Two guards overlapping: exactly one freeze while both are inside (0->1), one thaw after (1->0)."""
-    monkeypatch.setenv("ULTRAAI_MAX_JOBS", "4")
-    monkeypatch.setattr(worker, "BACKGROUND_UNITS", ["u1.service", "u2.service"])
-    calls = []
+class _Freezer:
+    """Fake systemd: units have a FreezerState, so freezing is idempotent across jobs,
+    like the real systemctl pause units rely on."""
 
-    def fake_systemctl(*args):
-        calls.append(args)
+    def __init__(self, units, active):
+        self.units = units
+        self.active = set(active)
+        self.frozen: set[str] = set()
+        self.calls: list[tuple] = []
+
+    def systemctl(self, *args):
+        self.calls.append(args)
         if args[0] == "show":
-            return "active running" if args[1] == "u1.service" else "inactive running"
+            if args[1] not in self.active:
+                return "inactive dead"
+            return f"active {'frozen' if args[1] in self.frozen else 'running'}"
+        if args[0] == "freeze":
+            self.frozen.add(args[1])
+        elif args[0] == "thaw":
+            self.frozen.discard(args[1])
         return ""
 
-    monkeypatch.setattr(worker, "_systemctl", fake_systemctl)
+    def calls_of(self, verb):
+        return [c for c in self.calls if c[0] == verb]
+
+
+def test_background_pause_no_thaw_while_any_job_inside(fake_flock, cache, monkeypatch):
+    """Two guards overlapping: one freeze while both are inside, and the first guard to
+    exit must neither thaw (background gives way while *any* song runs) nor lose the
+    frozen-units record; only the last exit thaws (0->0 presence)."""
+    monkeypatch.setenv("ULTRAAI_MAX_JOBS", "4")
+    monkeypatch.setattr(worker, "BACKGROUND_UNITS", ["u1.service", "u2.service"])
+    fz = _Freezer(["u1.service", "u2.service"], active=["u1.service"])
+    monkeypatch.setattr(worker, "_systemctl", fz.systemctl)
     inside = threading.Semaphore(0)
-    proceed = threading.Event()
-    counts = []
+    finish = [threading.Event() for _ in range(2)]
+    left = [threading.Event() for _ in range(2)]
 
-    def run():
+    def guard(i):
         with worker._background_guard():
-            counts.append(json.loads((cache / "background.paused").read_text(encoding="utf-8"))["count"])
             inside.release()
-            assert proceed.wait(5)
+            assert finish[i].wait(5)
+        left[i].set()  # outside the guard: any thaw from here on is a regression
 
-    th = _Threads(run, run).start()
-    assert inside.acquire(timeout=5) and inside.acquire(timeout=5)  # both inside
-    assert sorted(counts) == [1, 2]                                    # counter incremented per job
-    assert calls.count(("freeze", "u1.service")) == 1                  # paused only on 0->1
-    assert calls.count(("show", "u1.service", "-p", "ActiveState", "-p", "FreezerState", "--value")) == 1
-    proceed.set()
+    th = _Threads(lambda: guard(0), lambda: guard(1)).start()
+    assert inside.acquire(timeout=5) and inside.acquire(timeout=5)   # both inside
+    assert fz.calls_of("freeze") == [("freeze", "u1.service")]        # u2 not active
+    assert fz.frozen == {"u1.service"}                               # paused on the first entry
+    finish[0].set()                                                  # guard 0 leaves first...
+    assert left[0].wait(5)
+    assert fz.calls_of("thaw") == []                                 # ...but must NOT thaw
+    assert json.loads((cache / "background.paused").read_text(encoding="utf-8"))["units"] == ["u1.service"]
+    finish[1].set()
     th.join()
-    assert calls.count(("thaw", "u1.service")) == 1                    # resumed only on 1->0
-    assert not (cache / "background.paused").exists()                  # counter file removed at 0
+    assert fz.calls_of("thaw") == [("thaw", "u1.service")]            # thawed once, on the last exit
+    assert fz.frozen == set()
+    assert not (cache / "background.paused").exists()                 # record removed with the thaw
+    assert list((cache / "locks" / "background").glob("*.lock")) == []  # presence files cleaned up
+
+
+def test_background_guard_survives_killed_worker(fake_flock, cache, monkeypatch):
+    """Studio cancel kills the worker (proc.kill: no finally).  A job's presence is the
+    flock on its own file — the OS releases that when the process dies — so the stale
+    presence file of a killed job must not stop later guards from thawing: no stuck
+    refcount, background units freeze/thaw normally afterwards."""
+    monkeypatch.setenv("ULTRAAI_MAX_JOBS", "4")
+    monkeypatch.setattr(worker, "BACKGROUND_UNITS", ["u1.service"])
+    fz = _Freezer(["u1.service"], active=["u1.service"])
+    monkeypatch.setattr(worker, "_systemctl", fz.systemctl)
+    # what the cache looks like after a kill: the dead job's presence file sits there with
+    # no flock on it, and the unit it froze is still in the record (nobody ran finally)
+    pdir = cache / "locks" / "background"
+    pdir.mkdir(parents=True)
+    (pdir / "job-999999-0.lock").touch()
+    worker._write_paused(["u1.service"])
+    fz.frozen.add("u1.service")
+
+    def guard():
+        with worker._background_guard():
+            assert fz.frozen == {"u1.service"}   # still frozen while a job runs
+
+    _run(guard)
+    assert "u1.service" not in fz.frozen         # last exit thawed, dead job notwithstanding
+    assert fz.calls_of("thaw") == [("thaw", "u1.service")]
+    assert not (cache / "background.paused").exists()   # record cleaned up: no leak
+    assert list(pdir.glob("*.lock")) == []               # the dead job's file was removed
 
 
 def test_background_guard_max_jobs_1_is_legacy(fake_flock, cache, monkeypatch):

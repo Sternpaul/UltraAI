@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import itertools
 import json
 import os
 import subprocess
@@ -122,7 +123,9 @@ class _Slots:
 LOCKS_DIR = CACHE_DIR / "locks"
 SLOTS_DIR = LOCKS_DIR / "slots"
 GLOBAL_LOCK = CACHE_DIR / "worker.lock"  # max_jobs=1: the whole job; max_jobs>1: shared resources only
-PAUSED_FILE = CACHE_DIR / "background.paused"
+PAUSED_FILE = CACHE_DIR / "background.paused"  # background units frozen by jobs, not yet thawed
+PRESENCE_DIR = LOCKS_DIR / "background"  # per-job flock files: which jobs are inside _background_guard
+_guard_ids = itertools.count()  # unique _background_guard presence file names per process
 
 
 def max_jobs() -> int:
@@ -402,25 +405,50 @@ def resume_background(units: list[str]) -> None:
         log.info("resumed background work: %s", ", ".join(units))
 
 
-def _read_paused() -> dict:
+def _read_paused() -> list[str]:
+    """Background units frozen by job guards and not yet thawed (shared across processes)."""
     try:
         d = json.loads(PAUSED_FILE.read_text(encoding="utf-8"))
-        return {"count": max(0, int(d.get("count") or 0)),
-                "units": [str(u) for u in d.get("units") or []]}
+        return sorted({str(u) for u in d.get("units") or []})
     except (OSError, ValueError):
-        return {"count": 0, "units": []}
+        return []
 
 
-def _write_paused(st: dict) -> None:
-    tmp = PAUSED_FILE.parent / (PAUSED_FILE.name + ".tmp")
-    tmp.write_text(json.dumps(st), encoding="utf-8")
-    os.replace(tmp, PAUSED_FILE)
+def _write_paused(units: list[str]) -> None:
+    _atomic_json(PAUSED_FILE, {"units": units})
+
+
+def _others_inside() -> bool:
+    """True while another job is inside _background_guard: it holds the flock of its own
+    file under PRESENCE_DIR.  The OS drops that flock when a process dies (Studio cancel
+    kills the worker), so a killed job never counts as inside and needs no recovery —
+    unlocked leftovers of dead jobs are removed here."""
+    for p in PRESENCE_DIR.glob("*.lock"):
+        try:
+            f = open(p, "w")
+        except OSError:
+            return True  # unreadable: assume somebody is in there
+        try:
+            if not _acquire(f, blocking=False):
+                return True
+            try:
+                f.close()
+                p.unlink()
+            except OSError:
+                pass
+        finally:
+            _release(f)
+    return False
 
 
 @contextlib.contextmanager
 def _background_guard():
-    """Freeze the background systemd units while jobs run — refcounted across concurrent jobs:
-    pause only on 0->1, thaw only on 1->0 (counter file under the global lock).  With
+    """Freeze the background systemd units while jobs run, without a shared refcount that
+    a killed worker could leak (Studio cancel kills the process, no finally).  Each job
+    freezes (pause_background is idempotent via FreezerState) and every job thaws what is
+    recorded — but only when it is the last one to leave, i.e. no other guard still holds
+    its presence flock (a per-job lock file: released by the OS even on SIGKILL; the
+    freeze record and the entry/exit sections live under the global lock).  With
     max_jobs=1 this is the legacy behavior: pause on start, thaw on exit."""
     if max_jobs() <= 1:
         paused = pause_background()
@@ -429,27 +457,34 @@ def _background_guard():
         finally:
             resume_background(paused)
         return
+    me = PRESENCE_DIR / f"job-{os.getpid()}-{next(_guard_ids)}.lock"
     with _Lock(GLOBAL_LOCK):
-        st = _read_paused()
-        if st["count"] <= 0:
-            st["units"] = pause_background()
-        st["count"] += 1
-        _write_paused(st)
+        me.parent.mkdir(parents=True, exist_ok=True)
+        f = open(me, "w")  # our presence: held while the job runs, dropped by the OS on kill
+        _acquire(f)
+        try:
+            _write_paused(sorted(set(_read_paused()) | set(pause_background())))
+        except BaseException:
+            _release(f)
+            f.close()
+            raise
     try:
         yield
     finally:
         with _Lock(GLOBAL_LOCK):
-            st = _read_paused()
-            st["count"] = max(0, st["count"] - 1)
-            thaw, st["units"] = st["units"], []
-            if st["count"] == 0:
+            _release(f)
+            f.close()
+            try:
+                me.unlink()
+            except OSError:
+                pass
+            if not _others_inside():
+                thaw = _read_paused()
                 try:
                     PAUSED_FILE.unlink()
                 except OSError:
                     pass
-            else:
-                _write_paused(st)
-        resume_background(thaw)
+                resume_background(thaw)
 
 
 def process(job: Path) -> dict:
