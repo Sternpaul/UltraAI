@@ -222,7 +222,8 @@ async function upload(files) {
   if (!files.length) return toast("No audio files in the selection");
   const lyrics = await addFilesDialog(files.length);
   if (lyrics === null) return;
-  const options = await processDialog(`Add ${files.length} song${files.length > 1 ? "s" : ""} – processing options`);
+  const options = await processDialog(`Add ${files.length} song${files.length > 1 ? "s" : ""} – processing options`, null,
+    files.length > 1 && lyrics.trim() ? `The same lyrics will be added to all ${files.length} songs.` : "");
   if (!options) return;
   const form = new FormData();
   for (const f of files) form.append("files", f);
@@ -268,13 +269,16 @@ const SONG_S = 210;   // estimate for a 3½-minute song
 const FIXED_RATE = 0.5 + 0.35 + 0.12;   // analysis, listening, aligning (s per s of audio)
 
 /** Ask how to process: resolves to the options object, or null when cancelled. */
-export async function processDialog(title = "Processing options", start = null) {
+export async function processDialog(title = "Processing options", start = null, note = "") {
   const [models, settings] = await Promise.all([modelsCache ?? api("/api/models"), api("/api/settings")]);
   modelsCache = models;
   const o = { separation: "htdemucs", pitch: "swift", pitch_check: ["rmvpe"], sep_check: [], lead: "", notes: "singer",
     ...(settings.defaults || {}), ...(start || {}) };
   const dlg = document.getElementById("process-dialog"), box = document.getElementById("process-opts");
   document.getElementById("process-title").textContent = title;
+  const noteEl = document.getElementById("process-note");
+  noteEl.textContent = note;
+  noteEl.hidden = !note;
   const best = (g, kind) => {  // best measured timing / pitch in a group, for the ★ marks
     const b = models[g].filter(m => m[kind]);
     return { timing: Math.max(...b.map(m => m[kind].timing ?? 0)), pitch: Math.max(...b.map(m => m[kind].pitch)) };
