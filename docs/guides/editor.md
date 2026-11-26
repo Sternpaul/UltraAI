@@ -5,7 +5,7 @@ library (songs marked *Needs review* open here first).
 
 ## Layout
 
-![UltraAI Studio editor](editor.png)
+![UltraAI Studio editor](../assets/editor.png)
 
 Top: game-style preview with the current lyrics. Middle: piano roll — notes over the singer's
 pitch curve (orange), what speech recognition heard (grey words at the bottom), the vocal
