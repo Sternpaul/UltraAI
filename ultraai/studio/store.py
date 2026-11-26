@@ -82,6 +82,13 @@ class Library:
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._index: dict[str, Path] = {}
+        self._rev = 0  # bumped on every mutation; GET /api/events polls it to push `songs` events
+
+    @property
+    def rev(self) -> int:
+        """Library version counter: any add/remove/update (or a scan that finds a change)."""
+        with self._lock:
+            return self._rev
 
     # ---- lookup ------------------------------------------------------------
     def scan(self) -> dict[str, Path]:
@@ -102,6 +109,8 @@ class Library:
                     sid = "x" + uuid.uuid5(uuid.NAMESPACE_URL, folder.name).hex[:11]
                 if sid is not None:
                     idx[sid] = folder
+            if idx != self._index:  # folders appeared / disappeared on disk
+                self._rev += 1
             self._index = idx
             return dict(idx)
 
@@ -144,6 +153,7 @@ class Library:
             tmp = folder / ".studio" / "song.json.tmp"
             tmp.write_text(json.dumps(asdict(st), ensure_ascii=False, indent=1), encoding="utf-8")
             os.replace(tmp, folder / ".studio" / "song.json")
+            self._rev += 1  # every state write is a library change (SSE `songs` event)
 
     def update(self, sid: str, **kw) -> SongState:
         with self._lock:
@@ -280,6 +290,7 @@ class Library:
             trash.mkdir(exist_ok=True)
             shutil.move(str(folder), trash / f"{folder.name}-{int(time.time())}")
             self._index.pop(sid, None)
+            self._rev += 1
 
     # ---- versions ------------------------------------------------------------------
     def save_version(self, sid: str, txt_text: str, what: str) -> Path:

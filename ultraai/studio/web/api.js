@@ -1,5 +1,6 @@
 // Small client for the Studio backend.  Mutating requests carry the per-install token
-// (injected into index.html as a meta tag) in the x-ultraai header.
+// (injected into index.html as a meta tag) in the x-ultraai header.  The SSE stream
+// (EventSource cannot set headers) carries the same token as ?token= — see events.js.
 
 export class ApiError extends Error {
   constructor(msg, status) {
@@ -8,7 +9,7 @@ export class ApiError extends Error {
   }
 }
 
-const TOKEN = document.querySelector('meta[name="ultraai-token"]')?.content || "";
+export const TOKEN = document.querySelector('meta[name="ultraai-token"]')?.content || "";
 
 export async function api(path, { method = "GET", json, form } = {}) {
   const opts = { method, headers: {} };

@@ -27,6 +27,7 @@ class RingHandler(logging.Handler):
         self.buf: collections.deque = collections.deque(maxlen=size)
         self.ids = itertools.count(1)
         self.lock2 = threading.Lock()
+        self._last_id = 0
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -34,7 +35,9 @@ class RingHandler(logging.Handler):
             if record.exc_info:
                 msg += "\n" + logging.Formatter().formatException(record.exc_info)
             with self.lock2:
-                self.buf.append({"id": next(self.ids), "t": record.created, "level": record.levelname.lower(),
+                eid = next(self.ids)
+                self._last_id = eid
+                self.buf.append({"id": eid, "t": record.created, "level": record.levelname.lower(),
                                  "n": record.levelno, "name": record.name, "msg": msg})
         except Exception:  # noqa: BLE001 - logging must never raise
             pass
@@ -43,6 +46,12 @@ class RingHandler(logging.Handler):
         with self.lock2:
             out = [e for e in self.buf if e["id"] > after and e["n"] >= min_level]
         return out[-limit:]
+
+    @property
+    def last_id(self) -> int:
+        """The id of the newest entry (0 when empty) — the SSE stream's log cursor."""
+        with self.lock2:
+            return self._last_id
 
 
 ring = RingHandler()

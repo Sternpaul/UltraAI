@@ -1,5 +1,6 @@
 // Router, library board, settings, imports.
 import { api, h, lyricsLabel, toast } from "./api.js";
+import { startEvents, onSongs, eventsConnected } from "./events.js";
 
 const view = document.getElementById("view");
 const crumbs = document.getElementById("crumbs");
@@ -145,9 +146,12 @@ function library() {
     try { songs = await api("/api/songs"); render(); refreshSteps(songs); } catch (e) { toast(`Backend not reachable: ${e.message}`); }
   }
   load();
-  const timer = setInterval(() => { if (!document.hidden) load(); }, 3000);
+  // live updates over the SSE stream (replaces the old 3 s poll); while the stream is
+  // down, fall back to polling every 30 s
+  const offSongs = onSongs(list => { songs = list; render(); refreshSteps(songs); });
+  const fallback = setInterval(() => { if (!eventsConnected() && !document.hidden) load(); }, 30000);
   libraryReload = load;
-  return () => { clearInterval(timer); libraryReload = null; };
+  return () => { offSongs(); clearInterval(fallback); libraryReload = null; };
 }
 let libraryReload = null;
 
@@ -404,4 +408,5 @@ sdlg.addEventListener("close", async () => {
   } catch (e) { toast(e.message); }
 });
 
+startEvents();  // the single SSE stream (songs + log events) for the whole app
 route();

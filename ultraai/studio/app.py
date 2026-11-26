@@ -5,12 +5,15 @@
 Binds to 127.0.0.1 only.  Mutating requests must carry ``x-ultraai: <token>`` — the
 per-install token from ``token.txt`` in the config dir (injected into index.html as a
 meta tag) — compared with hmac.compare_digest, so a browser page from another site
-cannot add that header without a CORS preflight, which we never allow.  Every request
-must also carry a matching ``Host`` header (DNS-rebinding protection).
+cannot add that header without a CORS preflight, which we never allow.  The one
+exception is ``GET /api/events`` (SSE): EventSource cannot set headers, so there the
+token is accepted as ``?token=`` (query param, GET only).  Every request must also
+carry a matching ``Host`` header (DNS-rebinding protection).
 """
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
@@ -20,8 +23,9 @@ import traceback
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from ..ultrastar.reader import read
 from ..ultrastar.validator import validate
@@ -38,6 +42,72 @@ log = logging.getLogger("ultraai.studio")
 WEB = Path(__file__).with_name("web")
 
 MAX_UPLOAD = 2 * 1024 ** 3  # 2 GiB per POST /api/songs/files
+MAX_EVENT_CLIENTS = 20      # concurrent GET /api/events streams
+EVENT_TICK = 1.0            # s: the event watcher polls the library rev + log cursor this often
+EVENT_PING = 15.0           # s without any event before the stream sends a ": ping" comment
+
+
+def _sse(event: str, data, event_id: int | None = None) -> str:
+    """One Server-Sent-Events frame (the JSON payload is a single data: line)."""
+    out = f"id: {event_id}\n" if event_id is not None else ""
+    return out + f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+class EventBus:
+    """Fan-out behind GET /api/events: one asyncio task polls the library version counter
+    (Library.rev) and the log ring once per second and pushes the full /api/songs payload
+    / the new log entries onto a per-client asyncio.Queue.  All blocking store/ring work
+    runs in a worker thread, so the event loop is never blocked."""
+
+    def __init__(self, lib: Library, songs_payload):
+        self.lib, self.songs_payload = lib, songs_payload
+        self.clients: set[asyncio.Queue] = set()
+        self._task: asyncio.Task | None = None
+        self._last_rev = 0
+        self._last_log_id = 0
+
+    def start(self):
+        self._last_rev = self.lib.rev
+        self._last_log_id = ring.last_id
+        self._task = asyncio.create_task(self._watch(), name="studio-events")
+
+    def stop(self):
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+
+    def _peek(self) -> tuple[int, int]:
+        return self.lib.rev, ring.last_id
+
+    def _collect(self):
+        """Worker-thread snapshot: (rev, songs payload if changed, new log entries)."""
+        rev, log_id = self.lib.rev, ring.last_id
+        payload = self.songs_payload() if rev != self._last_rev else None
+        entries = ring.since(self._last_log_id, TRACE) if log_id != self._last_log_id else []
+        return rev, payload, entries
+
+    def _broadcast(self, item: tuple):
+        for q in list(self.clients):
+            q.put_nowait(item)
+
+    async def _watch(self):
+        while True:
+            await asyncio.sleep(EVENT_TICK)
+            try:
+                if self.clients:
+                    rev, payload, entries = await run_in_threadpool(self._collect)
+                    if payload is not None:
+                        self._last_rev = rev
+                        self._broadcast(("songs", payload))
+                    if entries:
+                        self._last_log_id = entries[-1]["id"]
+                        self._broadcast(("log", entries))
+                else:  # nobody listening: keep the cursors warm without building payloads
+                    self._last_rev, self._last_log_id = await run_in_threadpool(self._peek)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the watcher must never die
+                log.exception("event watcher failed")
 
 
 # ---------------------------------------------------------------- processing queue
@@ -194,18 +264,30 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     if processor_factory is None:
         processor_factory = lambda: make_processor(settings, lib)  # noqa: E731
     queue = Queue(lib, processor_factory, slots=2 if settings.processor == "ssh" else 1)
+
+    def songs_payload() -> list:
+        """The /api/songs body (also pushed as `songs` SSE events when the library changes)."""
+        order = {s: k for k, s in enumerate(("processing", "downloading", "needs_lyrics", "needs_review",
+                                              "queued", "error", "reviewed", "imported"))}
+        items = [card(s) for s in lib.all()]
+        items.sort(key=lambda c: (order.get(c["state"], 9), -c["open_issues"], -c["updated"]))
+        return items
+
+    bus = EventBus(lib, songs_payload)
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
     async def lifespan(_app):
+        bus.start()
         if start_queue:
             queue.start()
         yield
         queue.stop()
+        bus.stop()
 
     app = FastAPI(title="UltraAI Studio", lifespan=lifespan)
     app.state.lib, app.state.queue, app.state.settings = lib, queue, settings
-    app.state.token, app.state.port = token, port
+    app.state.token, app.state.port, app.state.bus = token, port, bus
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
 
     @app.middleware("http")
@@ -251,11 +333,55 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     # ---- library / queue -----------------------------------------------------------
     @app.get("/api/songs")
     def songs():
-        order = {s: k for k, s in enumerate(("processing", "downloading", "needs_lyrics", "needs_review",
-                                              "queued", "error", "reviewed", "imported"))}
-        items = [card(s) for s in lib.all()]
-        items.sort(key=lambda c: (order.get(c["state"], 9), -c["open_issues"], -c["updated"]))
-        return items
+        return songs_payload()
+
+    @app.get("/api/events")
+    async def events(request: Request, token: str = "", after: int = 0):
+        """SSE stream (text/event-stream): a `songs` event with the full /api/songs payload
+        whenever the library changes, and `log` events with new ring-buffer entries.
+
+        EventSource cannot set headers, so the per-install token is accepted as ?token=
+        on this GET only (hmac.compare_digest).  The log cursor resumes from Last-Event-ID
+        (sent automatically by the browser on reconnect) or ?after=."""
+        if not hmac.compare_digest((token or "").encode("utf-8", "ignore"), app.state.token.encode("utf-8")):
+            log.warning("refused GET /api/events without a valid ?token=")
+            return JSONResponse({"detail": "missing or wrong token"}, status_code=403)
+        last_id = (request.headers.get("last-event-id") or "").strip()
+        if last_id.isdigit():
+            after = max(after, int(last_id))
+        if len(bus.clients) >= MAX_EVENT_CLIENTS:
+            return JSONResponse({"detail": "too many event clients"}, status_code=503)
+
+        async def stream():
+            queue: asyncio.Queue = asyncio.Queue()
+            bus.clients.add(queue)  # removed in the finally, also on client disconnect
+            sent_log = after
+            try:
+                # initial state: the full library, then the log backlog since the cursor
+                yield _sse("songs", await run_in_threadpool(songs_payload))
+                backlog = await run_in_threadpool(ring.since, after, TRACE)
+                if backlog:
+                    sent_log = backlog[-1]["id"]
+                    yield _sse("log", backlog, event_id=sent_log)
+                while True:
+                    try:
+                        kind, data = await asyncio.wait_for(queue.get(), timeout=EVENT_PING)
+                    except asyncio.TimeoutError:
+                        yield ": ping\n\n"  # keep the connection alive through proxies
+                        continue
+                    if kind == "log":
+                        data = [e for e in data if e["id"] > sent_log]  # dedup vs the backlog
+                        if not data:
+                            continue
+                        sent_log = data[-1]["id"]
+                        yield _sse("log", data, event_id=sent_log)
+                    else:
+                        yield _sse("songs", data)
+            finally:
+                bus.clients.discard(queue)
+
+        return StreamingResponse(stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.post("/api/songs/url")
     def add_url(body: UrlIn):
