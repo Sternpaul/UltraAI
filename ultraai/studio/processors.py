@@ -16,8 +16,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 import logging
@@ -58,8 +60,123 @@ def progress_dict(server: dict | None, upload: str = "done", download: str = "pe
     return server
 
 
+class LiveLogTailer:
+    """While a job runs, append the new bytes of its live log into ``<song>/.studio/worker.log``
+    (the file GET /api/songs/{sid}/worker-log serves) every ``interval`` seconds.
+
+    ``source(offset)`` returns ``(new_bytes, size_now)``: the log bytes past ``offset`` and the
+    file size seen.  Local jobs read the job dir on the same disk; SSH jobs run
+    ``tail -c +<offset>`` on the server (see local_log_source / ssh_log_source).  On error the
+    offset is kept and the next tick retries (transient network, file not created yet).
+    stop() when the job reaches a FINAL state — ingest()'s full copy of the finished
+    worker.log stays the authoritative final overwrite.
+    """
+
+    def __init__(self, lib: Library, sid: str, source: Callable[[int], tuple[bytes, int]],
+                 interval: float = 2.0, sleep=None):
+        self.lib, self.sid, self.source = lib, sid, source
+        self.interval = interval
+        self._sleep = sleep  # None -> interruptible wait on the stop event; tests inject one
+        self.offset = 0
+        self._ev = threading.Event()
+        self.thread: threading.Thread | None = None
+
+    @property
+    def dest(self) -> Path:
+        return self.lib.studio_dir(self.sid) / "worker.log"
+
+    def start(self) -> "LiveLogTailer":
+        if self.thread is not None:
+            return self
+        self.offset = 0
+        self.dest.write_bytes(b"")  # fresh log for this run; ingest() overwrites it at the end
+        self._ev.clear()
+        self.thread = threading.Thread(target=self._loop, daemon=True, name=f"live-log-{self.sid[:8]}")
+        self.thread.start()
+        return self
+
+    def stop(self) -> "LiveLogTailer":
+        self._ev.set()
+        t, self.thread = self.thread, None
+        if t is not None and t.is_alive():
+            t.join(timeout=max(2.0, self.interval + 1.0))
+        return self
+
+    def _loop(self) -> None:
+        while not self._ev.is_set():
+            try:
+                chunk, size = self.source(self.offset)
+                if chunk:
+                    with open(self.dest, "ab") as f:
+                        f.write(chunk)
+                if size > self.offset:
+                    self.offset = size
+            except Exception as exc:  # noqa: BLE001 - retried on the next tick
+                log.log(TRACE, "live log tail of %s failed: %s", self.sid, exc)
+            if self._sleep is None:
+                self._ev.wait(self.interval)
+            else:
+                self._sleep(self.interval)
+
+
+def local_log_source(job: Path) -> Callable[[int], tuple[bytes, int]]:
+    """Tail the log files of a local job dir (same disk): out/worker.log + stderr.txt/log.txt."""
+    files = [Path(job) / "out" / "worker.log", Path(job) / "stderr.txt", Path(job) / "log.txt"]
+    offs = {f: 0 for f in files}
+
+    def source(_offset: int) -> tuple[bytes, int]:
+        chunk = bytearray()
+        for f in files:
+            try:
+                size = f.stat().st_size
+            except OSError:
+                continue  # not created yet
+            if size < offs[f]:  # truncated: start over
+                offs[f] = 0
+            if size > offs[f]:
+                with open(f, "rb") as fh:
+                    fh.seek(offs[f])
+                    chunk += fh.read(size - offs[f])
+                offs[f] = size
+        return bytes(chunk), sum(offs.values())
+
+    return source
+
+
+def ssh_log_source(run: Callable[..., str], remote_files: list[str]) -> Callable[[int], tuple[bytes, int]]:
+    """Tail remote job log files over ssh: per tick and file one ``tail -c +<offset>`` run.
+
+    ``run`` is SshTransport.run (the module-level _run with shlex-quoted ssh args).  Each call
+    prints the remote file size on the first line, then the new bytes; on ssh error the caller
+    keeps the last offset and retries on the next tick.
+    """
+    offs = {f: 0 for f in remote_files}
+
+    def source(_offset: int) -> tuple[bytes, int]:
+        chunk = bytearray()
+        for f in remote_files:
+            q = shlex.quote(f)
+            out = run(f"sz=$(wc -c < {q} 2>/dev/null || echo 0); printf '%s\\n' \"$sz\"; "
+                      f"tail -c +{offs[f] + 1} {q} 2>/dev/null")
+            head, _, body = out.partition("\n")
+            try:
+                size = int(head.strip() or 0)
+            except ValueError:
+                size = offs[f]
+            if size < offs[f]:  # truncated remotely: start over
+                offs[f] = 0
+            if size > offs[f]:
+                chunk += body.encode("utf-8", "replace")
+                offs[f] = size
+        return bytes(chunk), sum(offs.values())
+
+    return source
+
+
 class Processor:
     """Base: job preparation and result ingestion shared by local and remote processing."""
+
+    live_log_interval = 2.0  # seconds between live worker-log appends while a job runs
 
     def __init__(self, lib: Library, log=None, separation: str | None = None, cookies: str = ""):
         self.lib, self.separation = lib, separation
@@ -163,6 +280,7 @@ class LocalProcessor(Processor):
         proc = subprocess.Popen([sys.executable, "-m", "ultraai.cli", "process", str(job)],
                                 stdout=subprocess.DEVNULL, stderr=errf, text=True, creationflags=_NO_WINDOW)
         _PROCS[sid] = proc
+        tailer = LiveLogTailer(self.lib, sid, local_log_source(job), interval=self.live_log_interval).start()
         try:
             from ..worker import read_status
 
@@ -171,6 +289,7 @@ class LocalProcessor(Processor):
                     stage(progress_dict(read_status(job), upload="skipped", download="skipped"))
                 time.sleep(2.0)
         finally:
+            tailer.stop()  # job over: the ingest() copy below is the authoritative overwrite
             _PROCS.pop(sid, None)
             errf.close()
         if self._was_cancelled(sid):
@@ -317,7 +436,13 @@ class SshProcessor(Processor):
             self.t.run(self.start_template.format(dir=shlex.quote(self.dir), id=job_id,
                                                   ultraai=shlex.quote(self.ultraai)))
             self.lib.update(sid, job={"remote_id": job_id, "started": time.time()})
-        status = self._follow(jd, stage, sid)
+        tailer = LiveLogTailer(self.lib, sid,
+                               ssh_log_source(self.t.run, [f"{jd}/out/worker.log", f"{jd}/log.txt"]),
+                               interval=self.live_log_interval).start()
+        try:
+            status = self._follow(jd, stage, sid)
+        finally:
+            tailer.stop()  # job final: the ingest() copy below is the authoritative overwrite
         with tempfile.TemporaryDirectory() as tmp:
             stage and stage(progress_dict({**status, "stage": "Downloading the results", "eta": 5},
                                           download="running"))
