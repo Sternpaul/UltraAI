@@ -67,6 +67,8 @@ class SongState:
     progress: dict = field(default_factory=dict)  # live processing steps / ETA from the processor
     video: str = ""                     # file name of the music video (USDX #VIDEO), if any
     cover: str = ""                     # cover image (USDX #COVER), if any
+    video_url: str = ""                 # explicit video link (USDB v=); "" = derive from .ytid sidecar / #VIDEOURL
+    cover_url: str = ""                 # explicit cover link (USDB co=); "" = the YouTube thumbnail
     doc_version: int = 0                # bumped on every doc save and reprocess (optimistic locking)
     warning: str = ""                   # song-level check from processing ("Lyrics may not match the singing")
 
@@ -322,19 +324,57 @@ def youtube_cover_url(yt: str) -> str:
     return f"https://img.youtube.com/vi/{yt}/hqdefault.jpg"
 
 
-def usdb_text(txt_text: str, source: str) -> str:
+def song_ytid(lib: Library, st: SongState) -> str | None:
+    """The YouTube id of a song: from the add-link, else the ``.ytid`` sidecar next to the
+    audio, else ``#VIDEOURL``/``#AUDIOURL`` in the txt."""
+    if yt := youtube_id(st.source):
+        return yt
+    if st.audio:
+        side = lib.folder(st.id) / f"{Path(st.audio).stem}.ytid"
+        try:
+            v = side.read_text(encoding="utf-8").strip()
+        except OSError:
+            v = ""
+        if re.fullmatch(r"[A-Za-z0-9_-]{11}", v):
+            return v
+    txt = lib.txt_path(st.id)
+    if txt is not None:
+        from ..ultrastar.reader import read
+
+        try:
+            song = read(txt)
+        except Exception:  # noqa: BLE001 - no link derivable from a broken txt
+            return None
+        return youtube_id(song.get("VIDEOURL") or "") or youtube_id(song.get("AUDIOURL") or "")
+    return None
+
+
+def effective_links(lib: Library, st: SongState) -> tuple[str, str]:
+    """(video_link, cover_link) the song uses: the explicit overrides when set, else the
+    YouTube watch URL / thumbnail derived from the song's video id."""
+    yt = song_ytid(lib, st)
+    video = st.video_url or (f"https://www.youtube.com/watch?v={yt}" if yt else "")
+    cover = st.cover_url or (youtube_cover_url(yt) if yt else "")
+    return video, cover
+
+
+def usdb_text(txt_text: str, source: str, video_url: str = "", cover_url: str = "",
+              ytid: str = "") -> str:
     """The song as USDB expects it. USDB hosts only the txt, so every media file must be a
     link, and the links live inside #VIDEO as USDB Syncer meta tags — a comma-separated
     list of key=value pairs: v=<YouTube id> for audio/video, co=<cover url> for the cover
     (the thumbnail of that same video, unless the txt already links one), plus whatever
     the txt already had (preview=…, medley=…, …). USDB Syncer rewrites the downloaded txt
-    to local file names; local-only lines are left out here."""
+    to local file names; local-only lines are left out here.  ``video_url``/``cover_url`` are
+    the explicit overrides from the song info dialog (empty = derive as before)."""
     from ..ultrastar.reader import parse
     from ..ultrastar.writer import dumps
 
     song = parse(txt_text)
-    yt = youtube_id(source) or youtube_id(song.get("VIDEOURL") or "") or youtube_id(song.get("AUDIOURL") or "")
-    cover = song.get("COVERURL") or (youtube_cover_url(yt) if yt else None)
+    yt = (youtube_id(video_url)
+          or (ytid if re.fullmatch(r"[A-Za-z0-9_-]{11}", ytid or "") else None)
+          or youtube_id(source) or youtube_id(song.get("VIDEOURL") or "") or youtube_id(song.get("AUDIOURL") or ""))
+    cover = cover_url or song.get("COVERURL") or (youtube_cover_url(yt) if yt else None)
     old_video = song.get("VIDEO") or ""
     for k in ("VIDEO", "VIDEOGAP", "AUDIOURL", "VIDEOURL", "COVERURL", "BACKGROUNDURL"):
         song.set(k, None)
@@ -351,9 +391,10 @@ def usdb_text(txt_text: str, source: str) -> str:
         params["v"] = yt
         if "v" not in order:
             order.insert(0, "v")
-    if cover and "co" not in params:
+    if cover and (cover_url or "co" not in params):  # an explicit cover override wins over the txt's co=
         params["co"] = cover
-        order.append("co")
+        if "co" not in order:
+            order.append("co")
     if order:
         song.set("VIDEO", ",".join(f"{k}={params[k]}" for k in order))
     if cover:

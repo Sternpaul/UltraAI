@@ -97,7 +97,7 @@ function library() {
     if (/^https?:/.test(s.source || "") && (!s.video || !s.cover) && s.state !== "downloading")
       acts.push(h("button", { type: "button", class: "ghost small", title: "Download the music video and cover (Settings decide the quality)",
         onclick: () => getExtras(s) }, "Video"));
-    acts.push(h("button", { type: "button", class: "ghost small", title: "Edit artist / title / language", "aria-label": `Edit ${s.title}`,
+    acts.push(h("button", { type: "button", class: "ghost small", title: "Edit artist / title / language / video & cover links", "aria-label": `Edit ${s.title}`,
       onclick: () => infoDialog(s, load) }, "✎"));
     acts.push(h("button", { type: "button", class: "ghost small", title: "Remove from library", "aria-label": `Remove ${s.title}`, onclick: () => remove(s) }, "✕"));
     const sub = s.stage ? s.stage : lyricsLabel(s.lyrics_info, s.lyrics_source);
@@ -329,15 +329,36 @@ function costText(rate) {
 }
 
 // ------------------------------------------------------------------ song info dialog
+function ytidOf(u) {  // the 11-char video id of a YouTube link, else the trimmed link itself
+  const m = (u || "").match(/(?:v=|youtu\.be\/|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : (u || "").trim();
+}
+
 function infoDialog(s, after) {
   const dlg = document.getElementById("info-dialog"), f = dlg.querySelector("form");
   f.elements.artist.value = s.artist || ""; f.elements.title.value = s.title || ""; f.elements.language.value = s.language || "";
+  f.elements.video_url.value = s.video_link || ""; f.elements.cover_url.value = s.cover_link || "";
+  const warn = document.getElementById("info-media-warn");
+  // a downloaded [VD] file no longer matches when the video link points at another video
+  const videoChanged = () => {
+    const v = f.elements.video_url.value.trim();
+    return !!(s.video && v && ytidOf(v) !== ytidOf(s.video_link || ""));
+  };
+  const syncWarn = () => { warn.hidden = !videoChanged(); };
+  f.elements.video_url.addEventListener("input", syncWarn);
+  syncWarn();
   dlg.returnValue = "";
   dlg.showModal();
   dlg.addEventListener("close", async () => {
     if (dlg.returnValue !== "save") return;
+    const videoUrl = f.elements.video_url.value.trim(), coverUrl = f.elements.cover_url.value.trim();
+    if (videoChanged() && !confirm("A [VD] video file is already downloaded from the old link — it will not match the new video link. Re-download via the Video button to replace it.")) return;
     try {
-      await api(`/api/songs/${s.id}`, { method: "PATCH", json: { artist: f.elements.artist.value.trim(), title: f.elements.title.value.trim(), language: f.elements.language.value.trim() } });
+      await api(`/api/songs/${s.id}`, { method: "PATCH", json: {
+        artist: f.elements.artist.value.trim(), title: f.elements.title.value.trim(), language: f.elements.language.value.trim(),
+        // unchanged effective values stay derived (empty override) instead of being frozen
+        video_url: videoUrl === (s.video_link || "") ? "" : videoUrl,
+        cover_url: coverUrl === (s.cover_link || "") ? "" : coverUrl } });
       toast("Saved"); after?.();
     } catch (e) { toast(e.message); }
   }, { once: true });

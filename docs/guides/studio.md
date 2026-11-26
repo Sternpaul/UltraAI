@@ -53,6 +53,9 @@ worker runs locally on your PC.
 
 `Artist - Title/Artist - Title.txt` (USDX), the audio (`.m4a`/`.ogg`), optional `[VD].mp4` /
 `[CO].jpg`, and `.studio/` with the app state, separated vocals, lyrics, and version history.
+The ✎ button on a song card also edits the **video link** (`v=`) and **cover link** (`co=`) used
+for USDB (empty = the song's own YouTube link / thumbnail); if a `[VD]` video is already
+downloaded, the dialog warns that it will not match a changed video link.
 Point UltraStar Deluxe at the library root to sing. *USDB* in the editor shows the txt ready
 for usdb.animux.de.
 

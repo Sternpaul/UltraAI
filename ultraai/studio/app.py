@@ -30,7 +30,7 @@ from .config import Settings, atomic_write, load_token
 from .doc import DocError, doc_to_song, song_to_doc
 from .logs import TRACE, LEVELS, ring
 from .processors import Cancelled
-from .store import Library, SongState, VersionConflict
+from .store import Library, SongState, VersionConflict, effective_links, song_ytid
 
 log = logging.getLogger("ultraai.studio")
 
@@ -166,6 +166,21 @@ class MetaIn(BaseModel):
     title: str | None = None
     language: str | None = None
     priority: int | None = None
+    video_url: str | None = None           # explicit video link (USDB v=); "" = derive
+    cover_url: str | None = None           # explicit cover link (USDB co=); "" = derive
+
+
+MAX_LINK = 500  # cap for the video/cover link overrides in PATCH /api/songs/{sid}
+
+
+def media_link(field: str, value: str) -> str:
+    """Validate a video/cover link override: empty, or an http(s) URL of at most MAX_LINK chars."""
+    v = (value or "").strip()
+    if len(v) > MAX_LINK:
+        raise HTTPException(400, f"{field} is too long (max {MAX_LINK} characters)")
+    if v and not v.startswith(("http://", "https://")):
+        raise HTTPException(400, f"{field} must be an http(s) link or empty, got {v[:64]!r}")
+    return v
 
 
 class LyricsIn(BaseModel):
@@ -242,10 +257,12 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         d = {k: getattr(st, k) for k in ("id", "artist", "title", "language", "state", "stage", "error",
                                          "source", "created", "updated", "priority", "issues",
                                          "lyrics_source", "video", "cover", "progress", "lyrics_info",
-                                         "options")}
+                                         "options", "video_url", "cover_url")}
         d["open_issues"] = max(0, st.issues - len(st.dismissed))
         # the song-level check stays visible in the list until its issue is marked OK
         d["warning"] = "" if any(k.startswith("song_check:") for k in st.dismissed) else st.warning
+        # the effective media links (override, else derived from the song's YouTube id)
+        d["video_link"], d["cover_link"] = effective_links(lib, st)
         return d
 
     # ---- library / queue -----------------------------------------------------------
@@ -328,6 +345,9 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     def edit_meta(sid: str, body: MetaIn):
         get_state(sid)
         kw = {k: v for k, v in body.model_dump().items() if v is not None}
+        for k in ("video_url", "cover_url"):
+            if k in kw:
+                kw[k] = media_link(k, kw[k])
         st = lib.update(sid, **kw)
         if "artist" in kw or "title" in kw:
             try:
@@ -349,7 +369,9 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         txt = lib.txt_path(sid)
         if txt is None:
             raise HTTPException(404, "song has not been processed yet")
-        return PlainTextResponse(usdb_text(txt.read_text(encoding="utf-8"), st.source))
+        # the dialog's overrides win; empty ones derive from the song's YouTube id as before
+        return PlainTextResponse(usdb_text(txt.read_text(encoding="utf-8"), st.source,
+                                           st.video_url, st.cover_url, song_ytid(lib, st) or ""))
 
     @app.post("/api/songs/{sid}/lyrics")
     def set_lyrics(sid: str, body: LyricsIn):
@@ -385,7 +407,8 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         from .importer import fetch_extras
 
         st = get_state(sid)
-        if not st.source.startswith(("http://", "https://")):
+        if not (st.source.startswith(("http://", "https://"))
+                or st.video_url.startswith(("http://", "https://"))):
             raise HTTPException(400, "this song was not added from a link")
 
         def work():

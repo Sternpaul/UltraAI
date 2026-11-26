@@ -176,26 +176,30 @@ def _cover_url(info: dict) -> str | None:
 
 
 def fetch_extras(lib: Library, sid: str, settings, info: dict | None = None, progress=None) -> list[str]:
-    """Music video and cover for a song that came from a link (also for songs added earlier)."""
+    """Music video and cover for a song that came from a link (also for songs added earlier).
+    The video/cover link overrides from the song info dialog win over the original link."""
     import urllib.request
 
     st = lib.state(sid)
-    if not st.source.startswith(("http://", "https://")):
+    url = st.video_url or st.source  # the dialog's video link override, else the add-link
+    if not url.startswith(("http://", "https://")):
         return []
-    info = info or youtube_info(st.source, _cookies_from(settings))
+    info = info or youtube_info(url, _cookies_from(settings))
     got = []
     fmt = video_format(getattr(settings, "youtube_video", "none"))
     if fmt and not st.video:
         progress and progress("downloading video")
         with tempfile.TemporaryDirectory() as tmp:
-            f = _download(st.source, fmt, Path(tmp), _hook(progress, "video"), _cookies_from(settings))
+            f = _download(url, fmt, Path(tmp), _hook(progress, "video"), _cookies_from(settings))
             got.append(lib.add_media(sid, f, "VD", "video"))
-    if getattr(settings, "youtube_cover", False) and not st.cover and (cu := _cover_url(info)):
-        with tempfile.TemporaryDirectory() as tmp:
-            f = Path(tmp) / "cover.jpg"
-            req = urllib.request.Request(cu, headers={"User-Agent": "Mozilla/5.0"})
-            f.write_bytes(urllib.request.urlopen(req, timeout=30).read())
-            got.append(lib.add_media(sid, f, "CO", "cover"))
+    if getattr(settings, "youtube_cover", False) and not st.cover:
+        cu = st.cover_url or _cover_url(info)  # the dialog's cover link override wins
+        if cu:
+            with tempfile.TemporaryDirectory() as tmp:
+                f = Path(tmp) / "cover.jpg"
+                req = urllib.request.Request(cu, headers={"User-Agent": "Mozilla/5.0"})
+                f.write_bytes(urllib.request.urlopen(req, timeout=30).read())
+                got.append(lib.add_media(sid, f, "CO", "cover"))
     lib.apply_media_headers(sid)
     return got
 
