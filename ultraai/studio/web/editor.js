@@ -10,25 +10,28 @@ import { pitchIssues } from "./pitchcheck.js";
 import { findRepeats, propagate, retimeOnto, spanOf } from "./repeats.js";
 import { drawPreview } from "./preview.js";
 import { Timeline, drawOverview } from "./timeline.js";
+import { ACTIONS, actionById, captureProblem, eventKey, keyFor, keyLabel, resolve, reset, setBinding } from "./keys.js";
 
+// Help rows: [key cell, description]. "{actionId}" placeholders are filled with the
+// currently bound key (keyFor), so remapped keys show up in the help immediately.
 const SHORTCUTS = [
-  ["Space", "Play / pause"], ["Click", "Move the playhead (empty area) / select a note"],
+  ["{play}", "Play / pause"], ["Click", "Move the playhead (empty area) / select a note"],
   ["Drag note", "Move in time and pitch"], ["Drag note edge", "Change start / end"],
   ["Drag ▼ marker", "Move a line break"], ["Drag empty area", "Select several notes"],
   ["Shift+click", "Add to selection"],
-  ["Double-click empty", "Add a note"], ["← / →", "Nudge selected notes 10 ms (Shift: 100 ms), else move playhead"],
-  ["↑ / ↓", "Pitch ± 1 semitone (Shift: octave)"], ["P", "Pitch of selection = what is sung"],
-  ["Enter", "Edit the current line's text"], ["T", "Tap mode: re-time the current line by tapping"],
-  ["S", "Split note"], ["M", "Merge note with the next"], ["Delete", "Delete selected notes"],
-  ["N", "Selected notes: make normal · nothing selected: new note at the mouse (or playhead)"],
-  ["Double-click note", "Edit that note's syllable (Tab: next note)"],
-  ["G / F / R", "Golden / freestyle / rap (press again: normal)"], ["B", "Start a new line at the selected note"],
-  ["C", "Copy this line's pitches and golden notes to all its repeats"],
-  ["K", "Link repeats on/off: edits to one repeat are applied to all of them"],
-  ["Shift+B", "Join the line with the next"], ["L", "Loop selection / current issue"],
-  ["V", "Switch mix / vocals only"], ["[ / ]", "Slower / faster"], ["Tab / Shift+Tab", "Next / previous issue"],
-  ["Ctrl+wheel, + / −", "Zoom"], ["Wheel", "Scroll"], ["Ctrl+Z / Ctrl+Y", "Undo / redo"], ["Ctrl+S", "Save now"],
-  ["Esc", "Clear selection / leave tap mode"], ["?", "This help"],
+  ["Double-click empty", "Add a note"], ["{nudgeLeft} / {nudgeRight}", "Nudge selected notes 10 ms (Shift: 100 ms), else move playhead"],
+  ["{transposeUp} / {transposeDown}", "Pitch ± 1 semitone (Shift: octave)"], ["{snapPitch}", "Pitch of selection = what is sung"],
+  ["{editLine}", "Edit the current line's text"], ["{startTap}", "Tap mode: re-time the current line by tapping"],
+  ["{split}", "Split note"], ["{merge}", "Merge note with the next"], ["{delete}", "Delete selected notes"],
+  ["{normalOrNew}", "Selected notes: make normal · nothing selected: new note at the mouse (or playhead)"],
+  ["Double-click note", "Edit that note's syllable (Tab: next, Shift+Tab: previous — fixed keys, like in any other text field)"],
+  ["{kindGolden} / {kindFreestyle} / {kindRap}", "Golden / freestyle / rap (press again: normal)"], ["{breakLine}", "Start a new line at the selected note"],
+  ["{copyRepeats}", "Copy this line's pitches and golden notes to all its repeats"],
+  ["{toggleLink}", "Link repeats on/off: edits to one repeat are applied to all of them"],
+  ["{joinLine}", "Join the line with the next"], ["{loop}", "Loop selection / current issue"],
+  ["{source}", "Switch mix / vocals only"], ["{speedDown} / {speedUp}", "Slower / faster"], ["{issueNext} / {issuePrev}", "Next / previous issue"],
+  ["Ctrl+wheel, {zoomIn} / {zoomOut}", "Zoom"], ["Wheel", "Scroll"], ["{undo} / {redo}", "Undo / redo"], ["{save}", "Save now"],
+  ["{escape}", "Clear selection / leave tap mode"], ["{help}", "This help (remap keys in Editor settings ⚙)"],
 ];
 
 export async function openEditor(root, id, crumbs) {
@@ -102,20 +105,22 @@ export async function openEditor(root, id, crumbs) {
 
   // ---------------------------------------------------------------- layout
   const btn = (label, title, onclick, extra = {}) => h("button", { type: "button", title, "aria-label": title, onclick, ...extra }, label);
-  const playBtn = btn("▶", "Play / pause (Space)", () => togglePlay(), { class: "primary" });
+  const setTitle = (el, t) => { el.title = t; el.setAttribute("aria-label", t); };
+  const keyHint = id => keyLabel(keyFor(id));  // current binding of an action, for titles/help
+  const playBtn = btn("▶", "", () => togglePlay(), { class: "primary" });
   const timeEl = h("span", { class: "time" }, "0:00.00");
   const speedSel = h("select", { "aria-label": "Speed", onchange: e => setSpeed(Number(e.target.value)) },
     ...[["1", "100 %"], ["0.75", "75 %"], ["0.5", "50 %"]].map(([v, l]) => h("option", { value: v }, l)));
-  const srcBtn = btn("Vocals", "Hear only the separated vocals (V)", () => setSource(audio !== voc), { "aria-pressed": "false", disabled: !voc });
+  const srcBtn = btn("Vocals", "", () => setSource(audio !== voc), { "aria-pressed": "false", disabled: !voc });
   let showPreview = true;
   try { showPreview = localStorage.getItem("ultraai.preview") !== "off"; } catch { /* no storage */ }
   const previewBtn = btn("Preview", "Show / hide the game preview on top", () => setPreview(!showPreview), { "aria-pressed": String(showPreview) });
-  const loopBtn = btn("Loop", "Loop the selection / current issue (L)", () => toggleLoop(), { "aria-pressed": "false" });
+  const loopBtn = btn("Loop", "", () => toggleLoop(), { "aria-pressed": "false" });
   let linkOn = false;
   try { linkOn = localStorage.getItem("ultraai.link") === "on"; } catch { /* no storage */ }
-  const linkBtn = btn("🔗 Link repeats", "Edit all repeats of a line or chorus together (K)", () => setLink(!linkOn), { "aria-pressed": String(linkOn) });
-  const undoBtn = btn("↶", "Undo (Ctrl+Z)", () => doUndo(), { disabled: true });
-  const redoBtn = btn("↷", "Redo (Ctrl+Y)", () => doRedo(), { disabled: true });
+  const linkBtn = btn("🔗 Link repeats", "", () => setLink(!linkOn), { "aria-pressed": String(linkOn) });
+  const undoBtn = btn("↶", "", () => doUndo(), { disabled: true });
+  const redoBtn = btn("↷", "", () => doRedo(), { disabled: true });
   const saveEl = h("span", { class: "savestate", role: "status" }, "Saved");
   const reviewedBtn = btn(info.state === "reviewed" ? "✓ Done" : "Mark as done", "Mark this song as reviewed", () => markReviewed(),
     { class: info.state === "reviewed" ? "" : "primary" });
@@ -128,27 +133,58 @@ export async function openEditor(root, id, crumbs) {
   const voiceSel = doc.voices.length > 1 ? h("select", { "aria-label": "Singer", onchange: e => switchVoice(Number(e.target.value)) },
     ...doc.voices.map((v, k) => h("option", { value: String(k) }, `Singer ${v.voice}`))) : null;
 
+  const textBtn = btn("Text", "", () => editLine());
+  const tapBtn = btn("Tap", "", () => startTap());
+  const pitchBtn = btn("Pitch ↦ voice", "", () => snapPitch());
+  const splitBtn = btn("Split", "", () => splitNote());
+  const mergeBtn = btn("Merge", "", () => mergeNote());
+  const delBtn = btn("Delete", "", () => deleteNotes());
+  const goldenBtn = btn("★", "", () => setKind("*"));
+  const freeBtn = btn("F", "", () => setKind("F"));
+  const rapBtn = btn("R", "", () => setKind("R"));
+  const newNoteBtn = btn("+ Note", "", () => newNote());
+  const copyBtn = btn("Copy to repeats", "", () => copyRepeats());
+  const newLineBtn = btn("New line", "", () => breakLine());
+  const joinBtn = btn("Join", "", () => joinLine());
+  const keysBtn = btn("⚙", "", () => keysDialog());
+  const helpBtn = btn("?", "", () => help());
+
+  // Every UI string that shows a key goes through keyFor, so remapped keys appear on
+  // hover and in the help dialog immediately.
+  function updateKeyLabels() {
+    setTitle(playBtn, `Play / pause (${keyHint("play")})`);
+    setTitle(srcBtn, `Hear only the separated vocals (${keyHint("source")})`);
+    setTitle(loopBtn, `Loop the selection / current issue (${keyHint("loop")})`);
+    setTitle(linkBtn, `Edit all repeats of a line or chorus together (${keyHint("toggleLink")})`);
+    setTitle(undoBtn, `Undo (${keyHint("undo")})`);
+    setTitle(redoBtn, `Redo (${keyHint("redo")})`);
+    setTitle(textBtn, `Edit the line's text and syllables (${keyHint("editLine")} / double-click)`);
+    setTitle(tapBtn, `Re-time the current line by tapping along (${keyHint("startTap")})`);
+    setTitle(pitchBtn, `Set the selected notes to the sung pitch (${keyHint("snapPitch")})`);
+    setTitle(splitBtn, `Split the selected note (${keyHint("split")})`);
+    setTitle(mergeBtn, `Merge the selected note with the next (${keyHint("merge")})`);
+    setTitle(delBtn, `Delete the selected notes (${keyHint("delete")})`);
+    setTitle(goldenBtn, `Golden note (${keyHint("kindGolden")})`);
+    setTitle(freeBtn, `Freestyle (${keyHint("kindFreestyle")})`);
+    setTitle(rapBtn, `Rap (${keyHint("kindRap")})`);
+    setTitle(newNoteBtn, `New note at the playhead (${keyHint("normalOrNew")}, or double-click an empty spot)`);
+    setTitle(copyBtn, `Give every repeat of this line the same pitches and golden notes (${keyHint("copyRepeats")})`);
+    setTitle(newLineBtn, `Start a new line at the selected note (${keyHint("breakLine")})`);
+    setTitle(joinBtn, `Join the line with the next (${keyHint("joinLine")})`);
+    setTitle(keysBtn, "Editor settings: remap the keyboard shortcuts (stored in this browser only)");
+    setTitle(helpBtn, `Shortcuts (${keyHint("help")})`);
+    hint.textContent = `Red areas: the machine is unsure. Orange curve: what is sung. Grey words: what speech recognition heard. Press ${keyHint("help")} for shortcuts.`;
+  }
+
   const toolbar = h("div", { class: "toolbar" },
     h("div", { class: "group" }, playBtn, timeEl, speedSel, srcBtn, loopBtn, previewBtn, linkBtn),
-    h("div", { class: "group" },
-      btn("Text", "Edit the line's text and syllables (Enter / double-click)", () => editLine()),
-      btn("Tap", "Re-time the current line by tapping along (T)", () => startTap()),
-      btn("Pitch ↦ voice", "Set the selected notes to the sung pitch (P)", () => snapPitch()),
-      btn("Split", "Split the selected note (S)", () => splitNote()),
-      btn("Merge", "Merge the selected note with the next (M)", () => mergeNote()),
-      btn("Delete", "Delete the selected notes (Del)", () => deleteNotes())),
-    h("div", { class: "group" },
-      btn("★", "Golden note (G)", () => setKind("*")), btn("F", "Freestyle (F)", () => setKind("F")),
-      btn("R", "Rap (R)", () => setKind("R")),
-      btn("+ Note", "New note at the playhead (N, or double-click an empty spot)", () => newNote()),
-      btn("Copy to repeats", "Give every repeat of this line the same pitches and golden notes (C)", () => copyRepeats()),
-      btn("New line", "Start a new line at the selected note (B)", () => breakLine()),
-      btn("Join", "Join the line with the next (Shift+B)", () => joinLine())),
+    h("div", { class: "group" }, textBtn, tapBtn, pitchBtn, splitBtn, mergeBtn, delBtn),
+    h("div", { class: "group" }, goldenBtn, freeBtn, rapBtn, newNoteBtn, copyBtn, newLineBtn, joinBtn),
     h("div", { class: "group" }, goldenSel, goldenShare),
     h("div", { class: "group" }, undoBtn, redoBtn, voiceSel),
     h("span", { class: "spacer" }),
     h("div", { class: "group" }, saveEl, btn("USDB", "The txt ready for uploading to USDB (with the YouTube and cover links)", () => usdbDialog()),
-      reviewedBtn, btn("?", "Shortcuts (?)", () => help())));
+      reviewedBtn, keysBtn, helpBtn));
 
   const pvCanvas = h("canvas", { "aria-label": "Game preview" });
   const tlCanvas = h("canvas", { role: "application", "aria-label": "Notes timeline. Use the lines list for text." });
@@ -163,7 +199,8 @@ export async function openEditor(root, id, crumbs) {
   }
   const timelineEl = h("div", { class: "timeline" }, tlCanvas);
   const overview = h("div", { class: "overview", title: "Whole song – click to jump" }, ovCanvas);
-  const hint = h("div", { class: "hint" }, "Red areas: the machine is unsure. Orange curve: what is sung. Grey words: what speech recognition heard. Press ? for shortcuts.");
+  const hint = h("div", { class: "hint" }, "");
+  updateKeyLabels();
 
   const issueTab = h("button", { type: "button", role: "tab", "aria-selected": "true", onclick: () => showTab("issues") }, "Issues");
   const lineTab = h("button", { type: "button", role: "tab", "aria-selected": "false", onclick: () => showTab("lines") }, "Lines");
@@ -437,6 +474,9 @@ export async function openEditor(root, id, crumbs) {
       }
       tlCanvas.focus?.();
     };
+    // Tab/Shift+Tab stay fixed here (independent of issueNext/issuePrev remaps): in a
+    // text field they move between fields like everywhere else, and remapped keys that
+    // would type text must stay free for the syllable — the help says so explicitly.
     input.addEventListener("keydown", e => {
       e.stopPropagation();
       if (e.key === "Enter") { e.preventDefault(); finish(true); }
@@ -638,7 +678,7 @@ export async function openEditor(root, id, crumbs) {
   function renderIssues() {
     const open = ed.issues.filter(i => !i.dismissed).length;
     issueHead.replaceChildren(`${open} open of ${ed.issues.length}`, h("span", { class: "spacer" }),
-      h("button", { type: "button", class: "small", onclick: () => stepIssue(1) }, "Next ⇥"));
+      h("button", { type: "button", class: "small", title: `Next issue (${keyHint("issueNext")})`, onclick: () => stepIssue(1) }, "Next ⇥"));
     issueList.replaceChildren(...(ed.issues.length ? ed.issues.map(is =>
       h("div", { class: `item${is === ed.currentIssue ? " current" : ""}${is.dismissed ? " dismissed" : ""}`,
         onclick: () => gotoIssue(is) },
@@ -787,32 +827,56 @@ export async function openEditor(root, id, crumbs) {
   pvCanvas.addEventListener("click", () => togglePlay());
 
   // ---------------------------------------------------------------- keyboard
+  // The key handler no longer maps e.key directly: keys.resolve() maps the event to an
+  // action id using the remappable keymap (web/keys.js), then we run the same handler
+  // as before. With the default keybinds the behavior is identical.
   const onKey = e => {
     if (document.querySelector("dialog[open]")) return;
     if (e.target.closest?.("input, textarea, select")) return;
-    const k = e.key, ctrl = e.ctrlKey || e.metaKey;
     if (tap) {
-      if (k === "Escape") { e.preventDefault(); endTap(false); }
-      else if (/^[a-z]$/i.test(k) && !ctrl) { e.preventDefault(); tapDown(); }
+      // tap-mode letter keys stay global (not rebindable); Esc leaves tap mode
+      if (resolve(e) === "escape") { e.preventDefault(); endTap(false); }
+      else if (/^[a-z]$/i.test(e.key) && !(e.ctrlKey || e.metaKey)) { e.preventDefault(); tapDown(); }
       return;
     }
-    if (ctrl && k.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); return; }
-    if (ctrl && k.toLowerCase() === "y") { e.preventDefault(); doRedo(); return; }
-    if (ctrl && k.toLowerCase() === "s") { e.preventDefault(); dirty = true; save(); return; }
-    if (ctrl || e.altKey) return;
-    const act = {
-      " ": togglePlay, ArrowLeft: () => nudge(e.shiftKey ? -0.1 : -0.01), ArrowRight: () => nudge(e.shiftKey ? 0.1 : 0.01),
-      ArrowUp: () => transpose(e.shiftKey ? 12 : 1), ArrowDown: () => transpose(e.shiftKey ? -12 : -1),
-      Delete: deleteNotes, Backspace: deleteNotes, Enter: () => editLine(), Escape: () => { ed.selection.clear(); render(); },
-      Tab: () => stepIssue(e.shiftKey ? -1 : 1), "?": help, "+": () => { tl.zoomAt(tl.x(now()), 1.25); render(); },
-      "=": () => { tl.zoomAt(tl.x(now()), 1.25); render(); }, "-": () => { tl.zoomAt(tl.x(now()), 0.8); render(); },
-      "[": () => setSpeed(speed - 0.25), "]": () => setSpeed(speed + 0.25), Home: () => seek(0),
-    }[k] ?? {
-      s: splitNote, m: mergeNote, g: () => setKind("*"), f: () => setKind("F"), r: () => setKind("R"),
-      n: () => (ed.selection.size ? setNormal() : newNote()),
-      p: snapPitch, t: startTap, l: toggleLoop, c: copyRepeats, k: () => setLink(!linkOn), v: () => setSource(audio !== voc), b: () => (e.shiftKey ? joinLine() : breakLine()),
-    }[k.toLowerCase()];
-    if (act) { e.preventDefault(); act(); }
+    const act = resolve(e);
+    if (!act) return;
+    e.preventDefault();
+    switch (act) {
+      case "play": togglePlay(); break;
+      case "nudgeLeft": nudge(e.shiftKey ? -0.1 : -0.01); break;
+      case "nudgeRight": nudge(e.shiftKey ? 0.1 : 0.01); break;
+      case "transposeUp": transpose(e.shiftKey ? 12 : 1); break;
+      case "transposeDown": transpose(e.shiftKey ? -12 : -1); break;
+      case "delete": deleteNotes(); break;
+      case "editLine": editLine(); break;
+      case "escape": ed.selection.clear(); render(); break;
+      case "issueNext": stepIssue(1); break;
+      case "issuePrev": stepIssue(-1); break;
+      case "help": help(); break;
+      case "zoomIn": tl.zoomAt(tl.x(now()), 1.25); render(); break;
+      case "zoomOut": tl.zoomAt(tl.x(now()), 0.8); render(); break;
+      case "speedDown": setSpeed(speed - 0.25); break;
+      case "speedUp": setSpeed(speed + 0.25); break;
+      case "home": seek(0); break;
+      case "split": splitNote(); break;
+      case "merge": mergeNote(); break;
+      case "kindGolden": setKind("*"); break;
+      case "kindFreestyle": setKind("F"); break;
+      case "kindRap": setKind("R"); break;
+      case "normalOrNew": ed.selection.size ? setNormal() : newNote(); break;
+      case "snapPitch": snapPitch(); break;
+      case "startTap": startTap(); break;
+      case "loop": toggleLoop(); break;
+      case "copyRepeats": copyRepeats(); break;
+      case "toggleLink": setLink(!linkOn); break;
+      case "source": setSource(audio !== voc); break;
+      case "breakLine": breakLine(); break;
+      case "joinLine": joinLine(); break;
+      case "undo": doUndo(); break;
+      case "redo": doRedo(); break;
+      case "save": dirty = true; save(); break;
+    }
   };
   const onKeyUp = e => { if (tap && /^[a-z]$/i.test(e.key)) { e.preventDefault(); tapUp(); } };
   addEventListener("keydown", onKey);
@@ -833,9 +897,71 @@ export async function openEditor(root, id, crumbs) {
     dlg.showModal();
   }
   function help() {
-    document.getElementById("help-grid").replaceChildren(...SHORTCUTS.flatMap(([k, d]) => [h("kbd", {}, k), h("span", {}, d)]));
+    const fill = s => s.replace(/\{(\w+)\}/g, (_, id) => keyLabel(keyFor(id)));
+    document.getElementById("help-grid").replaceChildren(...SHORTCUTS.flatMap(([k, d]) => [h("kbd", {}, fill(k)), h("span", {}, d)]));
     document.getElementById("help-dialog").showModal();
   }
+
+  // ---------------------------------------------------------------- editor settings (remappable keys)
+  // Per-browser prefs in localStorage ("ultraai.keybinds.v1"); the server Settings page is untouched.
+  let listeningFor = null;  // action id currently waiting for a key press
+  const keysDlg = document.getElementById("keys-dialog");
+  const keysList = document.getElementById("keys-list");
+  const keysReset = document.getElementById("keys-reset");
+  function renderKeyRows() {
+    keysList.replaceChildren(...ACTIONS.map(a => h("button", {
+      type: "button", class: "keyrow" + (listeningFor === a.id ? " listening" : ""), dataset: { action: a.id },
+      title: "Click, then press the key to bind (Esc cancels, Backspace/Delete restores the default)",
+      onclick: () => startCapture(a.id),
+    }, h("span", { class: "keyrow-label" }, a.label), h("kbd", { class: "keyrow-key" }, keyLabel(keyFor(a.id))))));
+  }
+  function stopCapture() {
+    if (!listeningFor) return;
+    listeningFor = null;
+    removeEventListener("keydown", onCapture, true);
+  }
+  function startCapture(actionId) {
+    stopCapture();
+    listeningFor = actionId;
+    renderKeyRows();
+    addEventListener("keydown", onCapture, true);
+  }
+  function onCapture(e) {
+    e.preventDefault(); e.stopPropagation();
+    // Keys that can never work as a binding get a toast and capture stays active.
+    const problem = captureProblem(e);
+    if (problem === "modifier") return toast("A modifier alone is not a shortcut – hold Shift/Ctrl and press a key");
+    if (problem === "none") return toast("That key cannot be a shortcut (Alt and most Ctrl combos belong to the browser)");
+    if (problem === "reserved") return toast(`“${keyLabel(eventKey(e))}” is reserved by the browser – the page can never see it`);
+    const id = listeningFor;
+    stopCapture();
+    const k = eventKey(e);
+    if (k === "Escape") { renderKeyRows(); return; }  // cancel
+    if (k === "Backspace" || k === "Delete") {        // restore the default
+      setBinding(id, null);
+      toast(`“${actionById(id).label}” is back to its default key ${keyLabel(keyFor(id))}`);
+    } else {
+      const err = setBinding(id, k);
+      if (err?.conflict) toast(`“${keyLabel(k)}” is already bound to “${actionById(err.conflict).label}” – choose another key`);
+      else if (err) toast(`“${keyLabel(k)}” cannot be used as a shortcut`);
+      else toast(`“${actionById(id).label}” is now ${keyLabel(k)}`);
+    }
+    renderKeyRows();
+    updateKeyLabels();  // tooltips + hint show the new key immediately
+  }
+  function keysDialog() {
+    renderKeyRows();
+    keysDlg.showModal();
+  }
+  const onKeysClose = () => stopCapture();
+  const onKeysReset = () => {
+    reset();
+    renderKeyRows();
+    updateKeyLabels();
+    toast("All shortcuts reset to their defaults");
+  };
+  keysDlg.addEventListener("close", onKeysClose);
+  keysReset.addEventListener("click", onKeysReset);
 
   // ---------------------------------------------------------------- render loop
   let raf = 0, need = true;
@@ -878,6 +1004,9 @@ export async function openEditor(root, id, crumbs) {
     removeEventListener("keydown", onKey);
     removeEventListener("keyup", onKeyUp);
     removeEventListener("beforeunload", beforeUnload);
+    stopCapture();
+    keysDlg.removeEventListener("close", onKeysClose);
+    keysReset.removeEventListener("click", onKeysReset);
     for (const a of [mix, voc]) if (a) { a.pause(); a.src = ""; }
     if (dirty) save();
   };
