@@ -206,6 +206,15 @@ def test_max_jobs_bounds_concurrency(fake_flock, cache, monkeypatch):
     assert len(list((cache / "locks" / "slots").glob("slot-*.lock"))) == 2
 
 
+def test_lock_raises_when_flock_fails(cache, monkeypatch):
+    """A job must never proceed without its lock (flock can fail, e.g. on NFS)."""
+    monkeypatch.setattr(worker, "_acquire", lambda f, blocking=True: False)
+    monkeypatch.setattr(worker, "_release", lambda f: None)
+    with pytest.raises(OSError):
+        with worker._Lock(cache / "worker.lock"):
+            raise AssertionError("proceeded without the lock")
+
+
 def test_max_jobs_1_keeps_the_single_global_lock(fake_flock, cache, monkeypatch):
     monkeypatch.delenv("ULTRAAI_MAX_JOBS", raising=False)
     conc = _Concurrency()

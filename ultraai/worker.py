@@ -82,7 +82,9 @@ class _Lock:
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.f = open(self.path, "w")
-        _acquire(self.f)
+        if not _acquire(self.f):  # as before: a job never proceeds without its lock
+            self.f.close()
+            raise OSError(f"cannot acquire lock: {self.path}")
         return self
 
     def __exit__(self, *exc):
