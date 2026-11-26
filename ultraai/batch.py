@@ -391,6 +391,25 @@ def find_lyrics(track: Track) -> tuple[list[LrcResult], str, list[float] | None]
     return [], "none", None
 
 
+def expand_candidates(cands: list[LrcResult], lang: str) -> list[LrcResult]:
+    """Numerals -> spoken words in every lyric candidate (plain texts and synced line texts).
+
+    Whisper hears the sung words ("twenty two"), so the lyrics used for processing and the
+    output .txt must carry words too; LrcLine times are kept.  No-op when the
+    expand_numbers option is off.
+    """
+    from . import config
+    from .lyrics import expand_numbers
+
+    if not config.get_bool("expand_numbers"):
+        return cands
+    for c in cands:
+        c.plain = [expand_numbers(t, lang) for t in c.plain]
+        for ln in c.lines:
+            ln.text = expand_numbers(ln.text, lang)
+    return cands
+
+
 def safe_name(text: str) -> str:
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", text).strip(" .") or "Unknown"
 
@@ -462,6 +481,8 @@ def convert(track: Track, out_root: Path, separation: str, lead: str | None, gre
                 ln.text = greeklish(ln.text)
             lrc.plain = [greeklish(t) for t in lrc.plain]
         lang_name = "Greek (romanized)"
+
+    cands = expand_candidates(cands, code)
     row["language"] = lang_name
 
     name = safe_name(f"{track.artist} - {track.title}")

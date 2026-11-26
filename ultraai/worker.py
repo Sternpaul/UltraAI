@@ -307,7 +307,7 @@ def process(job: Path) -> dict:
 
 def _process(job: Path, spec: dict, out: Path) -> dict:
     from .audio import separate
-    from .batch import detect_language, greeklish
+    from .batch import detect_language, expand_candidates, greeklish
     from .byproducts import write_byproducts
     from .generate import analyse, generate_from_lines, generate_sung
     from .lrc import fetch_candidates
@@ -383,6 +383,7 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
                 ln.text = greeklish(ln.text)
             c.plain = [greeklish(t) for t in c.plain]
         lang_name = "Greek (romanized)"
+    cands = expand_candidates(cands, code or "xx")
     pr.start("align")
     meta = {"ARTIST": artist, "TITLE": title, "LANGUAGE": lang_name}
     for k in ("YEAR", "GENRE", "EDITION"):

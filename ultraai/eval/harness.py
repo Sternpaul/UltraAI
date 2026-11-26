@@ -136,13 +136,14 @@ def m2_generator(case: SongCase) -> Song:
     lrc = fetch(case.metadata.get("ARTIST", ""), case.metadata.get("TITLE", ""), case.audio)
     if lrc is None:
         raise LookupError("no lyrics on LRCLIB")
-    from ..batch import detect_language, greeklish
+    from ..batch import detect_language, expand_candidates, greeklish
 
     code, name = detect_language(lrc.texts)
     if code == "el" and name == "Greek" and "roman" in case.metadata.get("LANGUAGE", "").lower():
         for ln in lrc.lines:
             ln.text = greeklish(ln.text)
         lrc.plain = [greeklish(t) for t in lrc.plain]
+    lrc = expand_candidates([lrc], code)[0]
     from .. import config
     sep = config.get("separation")
     song, info = generate_from_lrc(case.audio, lrc, language_code(case.metadata.get("LANGUAGE")),
@@ -160,7 +161,7 @@ def m3_generator(case: SongCase) -> Song:
     import os
 
     from ..audio import DEFAULT_SEPARATION
-    from ..batch import detect_language, greeklish
+    from ..batch import detect_language, expand_candidates, greeklish
     from ..generate import generate_sung
     from ..lrc import fetch_candidates
     from ..lyrics import language_code
@@ -177,6 +178,7 @@ def m3_generator(case: SongCase) -> Song:
             for ln in c.lines:
                 ln.text = greeklish(ln.text)
             c.plain = [greeklish(t) for t in c.plain]
+    cands = expand_candidates(cands, language_code(case.metadata.get("LANGUAGE")))
     from .. import config
     sep = config.get("separation")
     song, info = generate_sung(case.audio, cands, language_code(case.metadata.get("LANGUAGE")),

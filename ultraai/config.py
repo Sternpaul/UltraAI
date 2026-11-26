@@ -60,6 +60,7 @@ OPTS: list[Opt] = [
     Opt("previewstart", "ULTRAAI_PREVIEWSTART", "1", "write #PREVIEWSTART (seconds) at the first chorus start: first note of the largest repeated line group"),
     Opt("export_lrc", "ULTRAAI_EXPORT_LRC", "0", "write a word-synced .lrc next to the song .txt (byproducts.py)"),
     Opt("export_ass", "ULTRAAI_EXPORT_ASS", "0", "write a karaoke .ass next to the song .txt (byproducts.py)"),
+    Opt("expand_numbers", "ULTRAAI_EXPAND_NUMBERS", "1", "rewrite numeral tokens in the lyrics as spoken words (22 -> twenty-two) for processing and the output .txt; 0 disables"),
     Opt("repair", "ULTRAAI_REPAIR", "1", "override LRC timestamps the audio clearly contradicts"),
     Opt("repair_conf", "ULTRAAI_REPAIR_CONF", "0.15", "min alignment confidence to trust the audio over the LRC"),
     Opt("repair_shift", "ULTRAAI_REPAIR_SHIFT", "3.0", "seconds of disagreement that count as a wrong LRC timestamp"),
