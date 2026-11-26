@@ -89,6 +89,9 @@ OPTS: list[Opt] = [
     Opt("background_units", "ULTRAAI_BACKGROUND_UNITS",
         "ultraai-bench.service ultraai-library.service ultraai-after-run.service",
         "systemd user units paused while a song job runs; read once at import"),
+
+    Opt("max_jobs", "ULTRAAI_MAX_JOBS", "1",
+        "max song jobs processed in parallel on this machine (worker.py: per-audio-hash lock files + slot semaphore); 1 = one job at a time, as before"),
 ]
 
 _BY_KEY = {o.key: o for o in OPTS}
