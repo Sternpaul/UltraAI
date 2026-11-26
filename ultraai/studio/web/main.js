@@ -160,13 +160,31 @@ function fmtDur(sec) {
 
 // ------------------------------------------------------------------ processing steps dialog
 let stepsFor = null;
-let stepsLog = null;  // live worker-log poller of the open steps dialog: {id, pre, sum, bytes, timer, live, busy}
+let stepsLog = null;  // live worker-log poller of the open steps dialog: {id, pre, sum, bytes, lines, timer, live, busy}
 const STEP_ICON = { done: "✓", running: "●", pending: "○", skipped: "–", error: "✕" };
+
+// Cap of lines kept in the live <pre>: a long job must not grow the DOM without bound.
+// 2000 lines ~ tens of KB of text, plenty for a session glimpse; anything older is dropped
+// from the view only (the full log stays in <song>/.studio/worker.log).
+const MAX_LOG_LINES = 2000;
 
 function stopStepsLog() {
   if (stepsLog?.timer) clearInterval(stepsLog.timer);
   if (stepsLog) stepsLog.sum.textContent = "Server log of this song";
   stepsLog = null;
+}
+
+// Append text to the live <pre> without rebuilding its whole textContent every poll, and
+// trim the oldest lines in batches of MAX_LOG_LINES so the trim itself stays cheap.
+function appendWorkerLog(sl, text) {
+  sl.pre.appendChild(document.createTextNode(text));
+  sl.lines += (text.match(/\n/g) || []).length;
+  if (sl.lines > MAX_LOG_LINES * 2) {
+    const lines = sl.pre.textContent.split("\n");
+    sl.pre.textContent = lines.slice(-MAX_LOG_LINES).join("\n");
+    sl.lines = Math.min(sl.lines, MAX_LOG_LINES);
+  }
+  sl.pre.scrollTop = sl.pre.scrollHeight;
 }
 
 // One worker-log fetch; full=true reloads from byte 0, otherwise appends only the bytes past sl.bytes.
@@ -175,10 +193,12 @@ async function fetchWorkerLog(sl, full) {
   const text = await r.text();
   if (!r.ok) throw new Error(text || `${r.status}`);
   const total = Number(r.headers.get("x-total-size"));
-  if (full) sl.pre.textContent = text || "No server log yet (it arrives with the results).";
-  else if (text) sl.pre.textContent += text;
+  if (full) {
+    sl.pre.textContent = text || "No server log yet (it arrives with the results).";
+    sl.lines = (sl.pre.textContent.match(/\n/g) || []).length;
+    sl.pre.scrollTop = sl.pre.scrollHeight;
+  } else if (text) appendWorkerLog(sl, text);
   sl.bytes = Number.isFinite(total) ? total : sl.bytes + new TextEncoder().encode(text).length;
-  sl.pre.scrollTop = sl.pre.scrollHeight;
 }
 
 // While the song is processing/downloading the server log streams live: poll ?after=<bytes>
@@ -186,6 +206,9 @@ async function fetchWorkerLog(sl, full) {
 // bytes once and stop (the server then serves the authoritative final copy).
 function setStepsLogLive(sl, live) {
   if (!stepsLog || stepsLog.id !== sl.id) return;
+  // Unchanged flag: keep the existing poll timer — refreshSteps calls this every ~3 s and
+  // clearing/re-creating the interval each time would reset the poll before it ever fires.
+  if (live === sl.live) return;
   const wasLive = sl.live;
   sl.live = live;
   sl.sum.textContent = live ? "Server log of this song (live)" : "Server log of this song";
@@ -214,7 +237,7 @@ async function stepsDialog(id) {
   det.ontoggle = async () => {
     if (!det.open) { stopStepsLog(); return; }
     const pre = det.querySelector("pre");
-    const sl = stepsLog = { id, pre, sum: det.querySelector("summary"), bytes: 0, timer: null, live: false, busy: false };
+    const sl = stepsLog = { id, pre, sum: det.querySelector("summary"), bytes: 0, lines: 0, timer: null, live: false, busy: false };
     pre.textContent = "Loading…";
     try { await fetchWorkerLog(sl, true); }
     catch (e) { pre.textContent = e.message; return; }

@@ -79,6 +79,7 @@ class LiveLogTailer:
         self._sleep = sleep  # None -> interruptible wait on the stop event; tests inject one
         self.offset = 0
         self._ev = threading.Event()
+        self._epoch = 0  # bumped by start(): ticks of an earlier run must never write again
         self.thread: threading.Thread | None = None
 
     @property
@@ -89,9 +90,11 @@ class LiveLogTailer:
         if self.thread is not None:
             return self
         self.offset = 0
+        self._epoch += 1
         self.dest.write_bytes(b"")  # fresh log for this run; ingest() overwrites it at the end
         self._ev.clear()
-        self.thread = threading.Thread(target=self._loop, daemon=True, name=f"live-log-{self.sid[:8]}")
+        self.thread = threading.Thread(target=self._loop, args=(self._epoch,), daemon=True,
+                                       name=f"live-log-{self.sid[:8]}")
         self.thread.start()
         return self
 
@@ -102,11 +105,16 @@ class LiveLogTailer:
             t.join(timeout=max(2.0, self.interval + 1.0))
         return self
 
-    def _loop(self) -> None:
-        while not self._ev.is_set():
+    def _loop(self, epoch: int) -> None:
+        while self._epoch == epoch and not self._ev.is_set():
             try:
                 chunk, size = self.source(self.offset)
-                if chunk:
+                # A tick can block inside source() far longer than stop()'s join timeout
+                # (an ssh call may hang for minutes).  If the job finished meanwhile,
+                # ingest()'s full copy is the authoritative log now — a straggler tick
+                # discards its bytes instead of appending stale ones after it.  The
+                # epoch check also discards ticks of a previous run after a restart.
+                if chunk and self._epoch == epoch and not self._ev.is_set():
                     with open(self.dest, "ab") as f:
                         f.write(chunk)
                 if size > self.offset:
@@ -129,15 +137,16 @@ def local_log_source(job: Path) -> Callable[[int], tuple[bytes, int]]:
         for f in files:
             try:
                 size = f.stat().st_size
+                start = offs[f]
+                if size < start:  # truncated: start over
+                    start = 0
+                if size > start:
+                    with open(f, "rb") as fh:
+                        fh.seek(start)
+                        chunk += fh.read(size - start)
+                offs[f] = size  # per-file commit: one unreadable file never drops the others' bytes
             except OSError:
-                continue  # not created yet
-            if size < offs[f]:  # truncated: start over
-                offs[f] = 0
-            if size > offs[f]:
-                with open(f, "rb") as fh:
-                    fh.seek(offs[f])
-                    chunk += fh.read(size - offs[f])
-                offs[f] = size
+                continue  # not created yet, or locked/unreadable right now: retry this file next tick
         return bytes(chunk), sum(offs.values())
 
     return source
@@ -147,13 +156,16 @@ def ssh_log_source(run: Callable[..., str], remote_files: list[str]) -> Callable
     """Tail remote job log files over ssh: per tick and file one ``tail -c +<offset>`` run.
 
     ``run`` is SshTransport.run (the module-level _run with shlex-quoted ssh args).  Each call
-    prints the remote file size on the first line, then the new bytes; on ssh error the caller
-    keeps the last offset and retries on the next tick.
+    prints the remote file size on the first line, then the new bytes.  The per-file offsets
+    commit only after every file of a tick was read: a mid-tick ssh error discards the tick,
+    and the next one re-reads from the last committed offsets — bytes are never lost or
+    duplicated (a file's bytes are only consistent with its own offset).
     """
     offs = {f: 0 for f in remote_files}
 
     def source(_offset: int) -> tuple[bytes, int]:
         chunk = bytearray()
+        pending: dict[str, int] = {}  # this tick's per-file offsets; committed only if every file reads
         for f in remote_files:
             q = shlex.quote(f)
             out = run(f"sz=$(wc -c < {q} 2>/dev/null || echo 0); printf '%s\\n' \"$sz\"; "
@@ -163,11 +175,14 @@ def ssh_log_source(run: Callable[..., str], remote_files: list[str]) -> Callable
                 size = int(head.strip() or 0)
             except ValueError:
                 size = offs[f]
-            if size < offs[f]:  # truncated remotely: start over
-                offs[f] = 0
-            if size > offs[f]:
+            start = pending.get(f, offs[f])
+            if size < start:  # truncated remotely: start over
+                start = 0
+                pending[f] = 0
+            if size > start:
                 chunk += body.encode("utf-8", "replace")
-                offs[f] = size
+                pending[f] = size
+        offs.update(pending)  # commit only after all files of the tick succeeded
         return bytes(chunk), sum(offs.values())
 
     return source

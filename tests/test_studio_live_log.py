@@ -125,6 +125,30 @@ def test_local_tailer_injected_sleep_and_stop(lib, tmp_path):
     assert (lib.studio_dir(sid) / "worker.log").read_bytes() == b""  # fresh, empty log for the run
 
 
+def test_local_source_later_file_failure_keeps_earlier_bytes(tmp_path, monkeypatch):
+    """One unreadable file must not drop the other files' bytes of the same tick."""
+    job = tmp_path / "job"
+    (job / "out").mkdir(parents=True)
+    (job / "out" / "worker.log").write_bytes(b"AAA\n")
+    (job / "stderr.txt").write_bytes(b"BBB\n")
+    (job / "log.txt").write_bytes(b"CCC\n")
+    src = local_log_source(job)
+    real_open = open
+
+    def flaky(file, mode="r", *a, **kw):
+        if "b" in mode and str(file).endswith("log.txt"):
+            raise PermissionError(13, "file in use")
+        return real_open(file, mode, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    chunk, size = src(0)  # log.txt unreadable this tick; its offset stays, the others commit
+    assert chunk == b"AAA\nBBB\n"
+    assert size == len(b"AAA\n") + len(b"BBB\n")
+    monkeypatch.undo()
+    chunk, size = src(size)  # log.txt retried from its unchanged offset
+    assert chunk == b"CCC\n" and size == len(b"AAA\nBBB\nCCC\n")
+
+
 # ---------------------------------------------------------------- tailer: ssh (fake run, never a real ssh)
 class FakeRemote:
     """Stands in for SshTransport.run: serves `wc -c` + `tail -c +N` from in-memory files."""
@@ -133,9 +157,13 @@ class FakeRemote:
         self.files = {k: bytearray(v) for k, v in files.items()}
         self.cmds: list[str] = []
         self.failures = 0
+        self.fail_sub = None  # substring of cmd that makes the next matching run raise once
 
     def run(self, cmd: str, timeout: float = 120) -> str:
         self.cmds.append(cmd)
+        if self.fail_sub and self.fail_sub in cmd:
+            self.fail_sub = None
+            raise RuntimeError("ssh: connection reset by peer")
         if self.failures:
             self.failures -= 1
             raise RuntimeError("ssh: connection reset by peer")
@@ -175,6 +203,22 @@ def test_ssh_source_keeps_offset_on_error_and_retries():
     assert f"tail -c +{size + 1}" in remote.cmds[-1]
 
 
+def test_ssh_source_mid_tick_error_discards_whole_tick():
+    """A mid-tick ssh error must not commit earlier files' offsets: the next tick
+    re-reads from the last committed offsets, so no file's bytes are lost."""
+    files = ["jobs/abc/out/worker.log", "jobs/abc/log.txt"]
+    remote = FakeRemote({"jobs/abc/out/worker.log": b"one\n", "jobs/abc/log.txt": b"two\n"})
+    remote.fail_sub = "jobs/abc/log.txt"  # the second file's read fails once
+    src = ssh_log_source(remote.run, files)
+    with pytest.raises(RuntimeError):
+        src(0)  # worker.log read fine, log.txt raised: the tick is discarded
+    assert len([c for c in remote.cmds if "worker.log" in c]) == 1
+    chunk, size = src(0)  # offsets were not committed: both files re-read from byte 0
+    assert chunk == b"one\ntwo\n" and size == len(b"one\n") + len(b"two\n")
+    assert len([c for c in remote.cmds if "worker.log" in c]) == 2  # re-read, not lost
+    assert "tail -c +1" in remote.cmds[-1]  # log.txt retried from its unchanged offset 0
+
+
 def test_ssh_tailer_thread_appends_and_stops(lib):
     sid = lib.create("Tester", "Ssh Thread Song").id
     remote = FakeRemote({"jobs/abc/out/worker.log": b"start\n", "jobs/abc/log.txt": b""})
@@ -195,7 +239,57 @@ def test_ssh_tailer_thread_appends_and_stops(lib):
     assert tailer.thread is None or not tailer.thread.is_alive()
 
 
-# ---------------------------------------------------------------- endpoint
+# ---------------------------------------------------------------- straggler tick after stop()
+def test_tailer_straggler_tick_discards_bytes_after_stop(lib):
+    """A tick can block in source() far beyond stop()'s join timeout (an ssh call hanging
+    for minutes).  Its bytes must never land in worker.log after ingest()'s final copy."""
+    sid = lib.create("Tester", "Straggler Song").id
+    entered, release = threading.Event(), threading.Event()
+
+    def source(_offset):
+        entered.set()
+        release.wait(timeout=10)  # the "hanging" tick, still blocked when stop() gives up
+        return b"stale bytes\n", 42
+
+    tailer = LiveLogTailer(lib, sid, source, interval=0.05).start()
+    straggler = tailer.thread
+    assert _wait_for(entered.is_set, what="the tick inside source()")
+    tailer.stop()  # event set; join times out with the tick still blocked
+    dest = lib.studio_dir(sid) / "worker.log"
+    dest.write_bytes(b"FINAL authoritative log\n")  # what ingest() writes afterwards
+    release.set()
+    straggler.join(timeout=5)
+    assert not straggler.is_alive()
+    # the straggler tick discarded its bytes instead of appending after the final copy
+    assert dest.read_bytes() == b"FINAL authoritative log\n"
+
+
+def test_tailer_stale_tick_of_previous_run_discards_after_restart(lib):
+    """After a stop() timed out on a blocked tick, start() begins a fresh run: the old
+    run's ticks must not write into the new run's worker.log."""
+    sid = lib.create("Tester", "Restart Song").id
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def source(_offset):
+        calls.append(_offset)
+        if len(calls) == 1:  # the tick of the first run blocks, like a hanging ssh call
+            entered.set()
+            release.wait(timeout=10)
+            return b"stale bytes\n", 42
+        return b"", 0
+
+    tailer = LiveLogTailer(lib, sid, source, interval=0.05).start()
+    old_thread = tailer.thread
+    assert _wait_for(entered.is_set, what="the first run's tick inside source()")
+    tailer.stop()  # join times out: the old tick is still blocked
+    tailer.start()  # fresh run: new epoch, thread, fresh log — the new tick returns nothing
+    release.set()  # the old run's straggler tick completes
+    old_thread.join(timeout=5)
+    assert not old_thread.is_alive()
+    tailer.stop()
+    # the old run's bytes never landed in the new run's fresh log
+    assert (lib.studio_dir(sid) / "worker.log").read_bytes() == b""
 
 
 def test_worker_log_endpoint_plain_and_after(studio):
