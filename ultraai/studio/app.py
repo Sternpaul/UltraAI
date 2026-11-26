@@ -337,6 +337,24 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
             st = lib.state(sid)
         return card(st)
 
+    @app.get("/api/songs/{sid}/versions")
+    def list_versions(sid: str):
+        """Every saved txt version of the song: [{name, mtime, size, what}], oldest first."""
+        get_state(sid)
+        return lib.versions(sid)
+
+    @app.post("/api/songs/{sid}/versions/{name}/restore")
+    def restore_version(sid: str, name: str):
+        """Copy version ``name`` over the current txt (atomic); the current txt is saved as a
+        new 'pre-restore' version first and doc_version is bumped (open editors then get a 409)."""
+        get_state(sid)
+        try:
+            return lib.restore_version(sid, name)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except KeyError as exc:
+            raise HTTPException(404, f"no such version: {exc.args[0]}") from None
+
     @app.get("/api/songs/{sid}/usdb")
     def usdb(sid: str):
         """The txt ready for USDB: the #VIDEO meta tags (v=<YouTube id>, co=<cover url>)
