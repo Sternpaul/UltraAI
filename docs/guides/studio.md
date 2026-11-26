@@ -13,14 +13,17 @@ Studio app (your PC)          processing server (Linux, CPU or GPU)
   library = plain USDX folders <── results copied back
 ```
 
-The server only needs Python ≥ 3.11, ffmpeg and `pip install -e ".[worker]"` — or the Docker
-image (`ghcr.io/sternpaul/ultraai-worker:<release tag>`, see README). The Studio expects the
-repo in `~/UltraAI` on the server (configurable in Settings).
+If you use a server, it only needs Python ≥ 3.11, ffmpeg and `pip install -e ".[worker]"` —
+or the Docker image (`ghcr.io/sternpaul/ultraai-worker:<release tag>`, see README). The Studio
+expects the repo in `~/UltraAI` there (configurable in Settings). Without a server, the same
+worker runs locally on your PC.
 
 ## Setup
 
-1. **Settings** → library folder + SSH host (`user@server`). **Test connection** — it must be
-   non-interactive (passphrase-less key or ssh-agent).
+1. **Settings** → library folder. Processing mode: **"On this computer"** works out of the box
+   (slower, ~10 min/song on CPU); **"On my server via SSH"** offloads to a Linux box
+   (`user@server`, *Test connection* — must be non-interactive: passphrase-less key or
+   ssh-agent). The server is optional, only for speed.
 2. **Add songs**: YouTube link, *Add files…*, or drag & drop audio. The YouTube id is kept
    (`#AUDIOURL`/`#VIDEOURL`, `.ytid` sidecar), so YouTube captions can be used as a *last
    resort* lyrics source — such songs show a warning badge ("last resort — often inaccurate").
