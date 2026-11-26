@@ -5,19 +5,12 @@ library (songs marked *Needs review* open here first).
 
 ## Layout
 
-```
-┌──────────────────────────────┬──────────────┐
-│ preview (as the game shows)  │ lyrics info  │
-├──────────────────────────────┤ Issues tab   │
-│ piano roll: notes over the   │ (default)    │
-│ sung pitch curve (orange),    ├──────────────┤
-│ heard words (grey), waveform │ Lines tab    │
-│ red areas = review spots,    ├──────────────┤
-│ dashed boxes = repeat groups │ Repeats tab  │
-├──────────────────────────────┴──────────────┤
-│ overview strip (click to seek)               │
-└──────────────────────────────────────────────┘
-```
+![UltraAI Studio editor](editor.png)
+
+Top: game-style preview with the current lyrics. Middle: piano roll — notes over the singer's
+pitch curve (orange), what speech recognition heard (grey words at the bottom), the vocal
+waveform, red areas = review spots, dashed boxes = repeat groups. Right: the Issues / Lines /
+Repeats tabs. Bottom: overview strip (click to seek).
 
 ## The review workflow
 
