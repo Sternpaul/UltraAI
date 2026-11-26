@@ -285,6 +285,21 @@ word_recall flat — clearly negative (one song anchored catastrophically). Fina
 **`ULTRAAI_YT_ANCHOR` default is now 0** (changed in PR-17). YouTube subs remain
 (a) fallback lyrics when LRCLIB misses and (b) the `yt_agreement` review signal.
 
+## When to run the gate (PR policy)
+
+Run the quick gate (`scripts/bench_pr.sh <branch>`, paste the summary table into the PR) **only
+if the PR can change the generated .txt** — i.e. it touches:
+
+`ultraai/generate.py`, `align.py`, `structure.py`, `pitch.py`, `pitchfit.py`, `audio.py`,
+`transcribe.py`, `lyrics.py`, `lrc.py`, `ytsubs.py`, `onsets.py`, `tempo.py`, `video.py`,
+`issues.py`, `byproducts.py`, `ultrastar/{reader,writer,validator,model}.py`,
+`eval/`, and the processing path of `batch.py` / `worker.py`.
+
+For everything else — Studio UI/backend (`ultraai/studio/`), docs, scripts, tests, CI,
+packaging, privacy cleanups — the gate is **not required**: `pytest`, `ruff check .`,
+`node --check` on changed JS (and `node --test` for pure JS modules) are enough. A cheap
+`python -c "import ultraai.studio.app"` import smoke is a fine extra for studio changes.
+
 ## Reproduce
 
 ```bash
