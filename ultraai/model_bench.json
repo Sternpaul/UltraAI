@@ -1,9 +1,4 @@
 {
- "songs": [
-  "Charli XCX - Apple",
-  "Creedence Clearwater Revival - Have You Ever Seen The Rain",
-  "Wir sind Helden - Denkmal"
- ],
  "separation": {
   "hdemucs_mmi.yaml": {
    "timing": 86.8,
@@ -295,5 +290,6 @@
    }
   },
   "pitch_songs_n": 24
- }
+ },
+ "songs_n": 3
 }

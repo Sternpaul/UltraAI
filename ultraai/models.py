@@ -93,7 +93,7 @@ def choices() -> dict:
     """For the processing-options window: every model with its benchmark result."""
     b = bench()
     w = b.get("wide", {})
-    out: dict = {"bench_songs": b.get("songs", []), "baseline": b.get("baseline", {}),
+    out: dict = {"bench_songs_n": b.get("songs_n", len(b.get("songs", []))), "baseline": b.get("baseline", {}),
                  "wide_songs": {"separation": w.get("songs_n", 0), "pitch": w.get("pitch_songs_n", 0)}}
     for group, table in (("separation", SEPARATION), ("pitch", PITCH), ("lead", LEAD)):
         rows = []
