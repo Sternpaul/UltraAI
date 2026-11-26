@@ -27,6 +27,9 @@ worker runs locally on your PC.
 2. **Add songs**: YouTube link, *Add files…*, or drag & drop audio. The YouTube id is kept
    (`#AUDIOURL`/`#VIDEOURL`, `.ytid` sidecar), so YouTube captions can be used as a *last
    resort* lyrics source — such songs show a warning badge ("last resort — often inaccurate").
+   You can also paste your own lyrics when adding a song (the *Lyrics* field in the add bar /
+   add-files dialog, or the *Lyrics* button on a queued song) — they are used instead of the
+   online lookup.
 3. Processing runs on the server (~10 min per new song on CPU; much faster with a CUDA GPU).
    The song list updates live (server-sent events); click *steps* for per-stage progress and
    ETA. Multiple songs can process in parallel on the server (`ULTRAAI_MAX_JOBS`, default 1).

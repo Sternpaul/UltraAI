@@ -30,7 +30,7 @@ from .config import Settings, atomic_write, load_token
 from .doc import DocError, doc_to_song, song_to_doc
 from .logs import TRACE, LEVELS, ring
 from .processors import Cancelled
-from .store import Library, SongState, VersionConflict
+from .store import Library, SongState, VersionConflict, save_user_lyrics
 
 log = logging.getLogger("ultraai.studio")
 
@@ -38,6 +38,7 @@ log = logging.getLogger("ultraai.studio")
 WEB = Path(__file__).with_name("web")
 
 MAX_UPLOAD = 2 * 1024 ** 3  # 2 GiB per POST /api/songs/files
+MAX_LYRICS = 20_000         # characters of user-pasted lyrics per song
 
 
 # ---------------------------------------------------------------- processing queue
@@ -154,6 +155,7 @@ class Queue:
 class UrlIn(BaseModel):
     url: str
     options: dict | None = None
+    lyrics: str | None = None       # pasted at add time: used instead of the online lookup
 
 
 class OptionsIn(BaseModel):
@@ -264,13 +266,16 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         url = body.url.strip()
         if not url.startswith(("http://", "https://")):
             raise HTTPException(400, "not a link")
+        lyrics = (body.lyrics or "").strip()
+        if len(lyrics) > MAX_LYRICS:
+            raise HTTPException(400, f"lyrics too long (max {MAX_LYRICS} characters)")
         holder: dict = {}
 
         opts = body.options or dict(settings.defaults)
 
         def work():
             try:
-                st = import_youtube(lib, url, settings=settings, options=opts,
+                st = import_youtube(lib, url, settings=settings, options=opts, lyrics=lyrics,
                                     progress=lambda m: holder.get("id") and lib.update(holder["id"], stage=m))
                 holder["id"] = st.id
                 queue.poke()
@@ -281,7 +286,8 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         return {"ok": True}
 
     @app.post("/api/songs/files")
-    async def add_files(files: list[UploadFile] = File(...), options: str = Form("")):
+    async def add_files(files: list[UploadFile] = File(...), options: str = Form(""),
+                        lyrics: str = Form("")):
         import tempfile
 
         from .importer import import_file
@@ -290,6 +296,9 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
             opts = json.loads(options) if options else dict(settings.defaults)
         except ValueError:
             raise HTTPException(400, "bad options") from None
+        text = lyrics.strip()
+        if len(text) > MAX_LYRICS:
+            raise HTTPException(400, f"lyrics too long (max {MAX_LYRICS} characters)")
         out = []
         for f in files:
             suffix = Path(f.filename or "audio").suffix.lower()
@@ -304,6 +313,8 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
                             raise HTTPException(413, f"upload too large (max {MAX_UPLOAD // 2**30} GiB)")
                         tmp.write(chunk)
                 st = import_file(lib, Path(tmp_name), original_name=f.filename, move=True)
+                if text:  # right after the song exists, before the queue can pick it up
+                    save_user_lyrics(lib, st.id, text)
                 st = lib.update(st.id, options=opts)
                 out.append(card(st))
             finally:  # never leak the temp file (import_file may have moved it away already)
@@ -354,7 +365,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     @app.post("/api/songs/{sid}/lyrics")
     def set_lyrics(sid: str, body: LyricsIn):
         st = get_state(sid)
-        atomic_write(lib.studio_dir(sid) / "lyrics.txt", (body.text.strip() + "\n").encode("utf-8"))
+        save_user_lyrics(lib, sid, body.text)
         lib.update(sid, state="queued", stage="", error="", priority=max(st.priority, 1), job={})
         queue.poke()
         return {"ok": True}

@@ -76,6 +76,16 @@ class SongState:
         return cls(**known)
 
 
+def save_user_lyrics(lib: Library, sid: str, text: str) -> Path:
+    """User-pasted lyrics -> ``.studio/lyrics.txt`` (stripped + trailing newline, atomic).
+
+    The queued job reads this file into the job spec (processors.Processor.job_spec) and
+    uses it instead of the online lookup, with lyrics_source 'user'."""
+    path = lib.studio_dir(sid) / "lyrics.txt"
+    atomic_write(path, (text.strip() + "\n").encode("utf-8"))
+    return path
+
+
 class Library:
     def __init__(self, root: Path):
         self.root = Path(root)

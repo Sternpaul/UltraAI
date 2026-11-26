@@ -9,7 +9,7 @@ from pathlib import Path
 
 import logging
 
-from .store import Library, SongState, youtube_id
+from .store import Library, SongState, save_user_lyrics, youtube_id
 
 log = logging.getLogger("ultraai.import")
 
@@ -209,9 +209,15 @@ def _hook(progress, what: str):
     return hook
 
 
-def import_youtube(lib: Library, url: str, progress=None, settings=None, options: dict | None = None) -> SongState:
-    """Create the song right away (state 'downloading'), then download audio, video, cover."""
+def import_youtube(lib: Library, url: str, progress=None, settings=None, options: dict | None = None,
+                   lyrics: str = "") -> SongState:
+    """Create the song right away (state 'downloading'), then download audio, video, cover.
+
+    ``lyrics`` (pasted at add time) are stored in .studio/lyrics.txt right after the song
+    exists — while still 'downloading', so the queue cannot pick the song up without them."""
     st = lib.create("", url, source=url, state="downloading")
+    if lyrics.strip():
+        save_user_lyrics(lib, st.id, lyrics)
     if options:
         lib.update(st.id, options=options)
     ck = _cookies_from(settings)
