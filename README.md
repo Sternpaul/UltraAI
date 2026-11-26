@@ -9,6 +9,18 @@ straight there to fix them.
 
 Long-form guides live in [docs/guides/](docs/guides/README.md).
 
+## Getting started
+
+1. Download the Studio installer from the [latest release](https://github.com/Sternpaul/UltraAI/releases/latest) and run it.
+2. Settings → pick an empty song-library folder and a processing worker (a Linux box over SSH,
+   or the same PC — no GPU needed, ~10 min/song on CPU).
+3. Add a song (YouTube link or audio file), wait for processing, fix the red spots in the
+   editor (`Tab` jumps to each), done — the folder is a ready-to-sing USDX library.
+
+Details: [wiki → Getting Started](https://github.com/Sternpaul/UltraAI/wiki/Getting-Started),
+[Studio guide](docs/guides/studio.md), [troubleshooting](docs/guides/troubleshooting.md).
+
+
 Inspired by [UltraSinger](https://github.com/rakuri255/UltraSinger) — but written from
 scratch, not a fork; [PLAN.md](PLAN.md) §1 lists what reading its code taught us.
 
