@@ -91,7 +91,10 @@ OPTS: list[Opt] = [
         "systemd user units paused while a song job runs; read once at import"),
 
     Opt("max_jobs", "ULTRAAI_MAX_JOBS", "1",
-        "max song jobs processed in parallel on this machine (worker.py: per-audio-hash lock files + slot semaphore); 1 = one job at a time, as before"),
+        "max song jobs processed in parallel on this machine (worker.py: per-audio-hash lock files + slot semaphore); "
+        "1 = one job at a time, as before. Each job is a process with the full model stack in memory, "
+        "so N needs roughly N x the RAM/VRAM of one job; on a cold cache two jobs can also download the same "
+        "model into the shared MODEL_DIR at once — run one job first to warm it"),
 ]
 
 _BY_KEY = {o.key: o for o in OPTS}
