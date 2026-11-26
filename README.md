@@ -1,10 +1,14 @@
 # UltraAI
 
 Turns songs into [UltraStar Deluxe](https://usdx.eu) karaoke files automatically: lyrics,
-timing, line breaks and notes. Lyrics are fetched from LRCLIB (or pasted by you) and treated
-as the truth; the audio decides *when* each syllable is sung and at which pitch. A risk model
-marks the places where the machine is unsure, and **UltraAI Studio** takes you straight
-there to fix them.
+timing, line breaks and notes. Lyrics come from a sidecar file, LRCLIB, the audio file's own
+tags, or — as a flagged last resort — YouTube captions; numerals are spelled out (`22` →
+`twenty-two`) so they align with the sung words. The lyrics are treated as the truth; the
+audio decides *when* each syllable is sung and at which pitch. A risk model plus pitch
+double-checks mark the places where the machine is unsure, and **UltraAI Studio** takes you
+straight there to fix them.
+
+Long-form guides live in the [wiki](https://github.com/Sternpaul/UltraAI/wiki).
 
 Inspired by [UltraSinger](https://github.com/rakuri255/UltraSinger) — but written from
 scratch, not a fork; [PLAN.md](PLAN.md) §1 lists what reading its code taught us.
@@ -28,7 +32,16 @@ flowchart LR
 Every expensive step is cached per audio file in `~/.cache/ultraai/work/<hash>/`, so changing
 lyrics or re-running costs seconds. Generated songs are scored against hand-made ones
 (`ultraai eval`, `scripts/`), which is how every heuristic here was tuned — see
-[PLAN.md](PLAN.md) for the measurements.
+[BENCHMARK.md](BENCHMARK.md) for the measurements.
+
+Recent additions: robust beat grid (BPM/GAP scored against detected onsets), `#VIDEOGAP` when a
+video file sits next to the audio, `#PREVIEWSTART` at the chorus, optional `.lrc`/`.ass`
+exports, song-level "lyrics may not match the singing" warning, RMVPE pitch double-check
+warnings (on by default), validator warnings (overlaps, missing breaks, …) shown as issues at
+the exact song time with a jump-to button, editor version history with one-click restore, live
+song-list updates (server-sent events), parallel worker jobs (`ULTRAAI_MAX_JOBS`), and
+YouTube rate-limit handling (`ULTRAAI_COOKIES` + browser impersonation). See the
+[wiki](https://github.com/Sternpaul/UltraAI/wiki) for details.
 
 ```mermaid
 flowchart LR
@@ -85,7 +98,11 @@ The library is a normal USDX song folder (`Artist - Title/Artist - Title.txt`, `
 * `T` (tap mode): the line plays, hold any letter key for each syllable – fastest way to
   re-time a line. `P` sets selected notes to the sung pitch.
 * `Space` play, `L` loop, `V` vocals only, `[` `]` speed, `Ctrl+Z` undo, `?` all shortcuts.
-* Everything saves automatically; every version is kept in `.studio/versions/`.
+* Everything saves automatically (the song list updates live, no refresh needed); every save
+  is kept in `.studio/versions/` — *Versions* on a song card lists them and restores any of
+  them with one click.
+* Save warnings (e.g. overlapping notes) stay visible as a toast with a **Show** button and
+  appear in the issue list at the exact time in the song; `Tab` or the ⇥ button jumps there.
 
 ### Settings worth knowing
 
@@ -96,6 +113,7 @@ The library is a normal USDX song folder (`Artist - Title/Artist - Title.txt`, `
 | Cover | on | Video thumbnail as `#COVER` |
 | Vocal separation | Standard | ~5 min/song; "cleaner vocals" takes 20–30 min |
 | Log detail | Normal | *Everything* logs every request, SSH command and download message |
+| YouTube cookies | off | Path to a `cookies.txt` (browser export) — lifts YouTube 429 rate limits on downloads/captions. The file is a secret: only its path is used, never logged or uploaded |
 
 Logs: the *Log* page in the app, or `%APPDATA%\UltraAI\studio.log`.
 
@@ -112,11 +130,11 @@ Or run the worker as a container — the image (linux/amd64 + linux/arm64, ffmpe
 is published per release tag:
 
 ```bash
-docker pull ghcr.io/sternpaul/ultraai-worker:v0.1.13   # image tag = release tag
+docker pull ghcr.io/sternpaul/ultraai-worker:v0.1.17   # image tag = release tag
 docker run --rm \
   -v "$HOME/.cache/ultraai:/cache" \
   -v "$PWD:/work" -w /work \
-  ghcr.io/sternpaul/ultraai-worker:v0.1.13 process JOBDIR
+  ghcr.io/sternpaul/ultraai-worker:v0.1.17 process JOBDIR
 ```
 
 The image sets `ULTRAAI_CACHE=/cache` and declares `/cache` a volume, so mount the host
@@ -143,6 +161,10 @@ ultraai check FILE.txt        validate an UltraStar file
   `worker.py`, `studio/` (backend + `web/` editor, plain ES modules, no build step).
 * `pip install -e ".[worker,dev]" && pytest`
 * `BENCHMARK.md` – which separation/pitch/karaoke models score best (and what is still being measured).
+* `docs/pipeline-improvements.md` – researched ideas for the automatic pipeline, with measured verdicts.
+* `docs/ROADMAP.md`, `docs/ultrastar-format.md` – roadmap; the USDX format we read/write.
 * `PLAN.md` – method and measurements; `EDITOR_PLAN.md` – Studio design and status.
+* The [wiki](https://github.com/Sternpaul/UltraAI/wiki) mirrors these as guides (Studio, CLI, configuration reference, benchmarks, troubleshooting).
+* All `ULTRAAI_*` settings are registered in `ultraai/config.py` (`python -c "from ultraai import config; print(config.table())"`).
 * The Windows installer is built by `.github/workflows/windows-installer.yml`
   (PyInstaller + Inno Setup); tag `vX.Y.Z` to publish a release.
