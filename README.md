@@ -69,8 +69,6 @@ flowchart LR
 
 ## UltraAI Studio (Windows app)
 
-![UltraAI Studio editor](docs/assets/editor.png)
-
 
 Download the installer from the [latest release](https://github.com/Sternpaul/UltraAI/releases/latest)
 and run it (per-user install, no admin rights; Windows may warn about an unknown publisher:
