@@ -133,6 +133,9 @@
     <label>Artist <input name="artist" required></label>
     <label>Title <input name="title" required></label>
     <label>Language <input name="language" placeholder="detected automatically"></label>
+    <label>Video link (v=) <input name="video_url" type="url" placeholder="YouTube link of the music video (empty = the song's own link)"></label>
+    <label>Cover link (co=) <input name="cover_url" type="url" placeholder="image link for the cover (empty = the video thumbnail)"></label>
+    <p class="warn" id="info-media-warn" hidden>A [VD] video file is already downloaded from the old link — it will not match the new video link. Re-download via the Video button to replace it.</p>
     <p class="muted">The folder and files are renamed to “Artist - Title”.</p>
     <div class="actions"><span class="spacer"></span>
       <button value="cancel" formnovalidate class="ghost">Cancel</button>
