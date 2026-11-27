@@ -187,5 +187,21 @@
     <div class="actions"><span class="spacer"></span><button class="primary">Close</button></div>
   </form>
 </dialog>
+
+<dialog id="keys-dialog" aria-labelledby="keys-title">
+  <form method="dialog">
+    <h2 id="keys-title">Editor settings</h2>
+    <p class="muted">Remap the editor's keyboard shortcuts. Stored in this browser only (localStorage),
+      not on the server. Click a row, then press the key you want: <kbd>Esc</kbd> cancels,
+      <kbd>Backspace</kbd>/<kbd>Del</kbd> restores the default, and a key already used by another
+      action is rejected. Tap-mode letter keys are not rebindable.</p>
+    <div class="keys-list" id="keys-list"></div>
+    <div class="actions">
+      <button type="button" id="keys-reset" class="ghost">Reset all to defaults</button>
+      <span class="spacer"></span>
+      <button class="primary">Close</button>
+    </div>
+  </form>
+</dialog>
 </body>
 </html>

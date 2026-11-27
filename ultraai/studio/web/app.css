@@ -81,6 +81,20 @@ dialog textarea { width: 100%; font-family: ui-monospace, Consolas, monospace; r
 @media (width < 700px) { .optgrid { grid-template-columns: 1fr; } }
 .help-grid { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; max-height: 60vh; overflow: auto; }
 
+/* ---- editor settings: remappable keys ---- */
+#keys-dialog { width: min(600px, calc(100vw - 32px)); }
+.keys-list { display: flex; flex-direction: column; max-height: 55vh; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+.keyrow {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%;
+  border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent;
+  padding: 6px 10px; text-align: left; white-space: normal;
+}
+.keyrow:last-child { border-bottom: 0; }
+.keyrow:hover { background: var(--panel-2); border-color: var(--line); }
+.keyrow.listening { background: color-mix(in srgb, var(--accent) 16%, transparent); outline: 2px solid var(--accent); outline-offset: -2px; }
+.keyrow-label { flex: 1; min-width: 0; }
+.keyrow-key { flex: none; }
+
 #drop-overlay {
   position: fixed; inset: 0; background: rgb(47 95 224 / .18); border: 3px dashed var(--accent);
   display: grid; place-items: center; font-size: 22px; font-weight: 600; z-index: 50; pointer-events: none;
