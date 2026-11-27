@@ -132,6 +132,10 @@ a.button-like:hover { border-color: var(--accent); }
 .library { max-width: 1200px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .addbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .addbar input[type=url] { flex: 1; min-width: 260px; }
+.addbar details.addlyrics { flex-basis: 100%; }
+.addbar details.addlyrics summary { cursor: pointer; color: var(--muted); font-size: 13px; width: fit-content; }
+.addbar details.addlyrics summary:hover { color: var(--accent); }
+.addbar details.addlyrics textarea { width: 100%; margin-top: 6px; font-family: ui-monospace, Consolas, monospace; resize: vertical; }
 .filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .filters input[type=search] { margin-left: auto; min-width: 200px; }
 .songs { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); overflow: hidden; }

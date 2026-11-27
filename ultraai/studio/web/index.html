@@ -118,12 +118,27 @@
 <dialog id="process-dialog" aria-labelledby="process-title">
   <form method="dialog" id="process-form">
     <h2 id="process-title">Processing options</h2>
+    <p class="muted" id="process-note" hidden></p>
     <div class="optgrid" id="process-opts"></div>
     <p class="muted" id="process-eta"></p>
     <label class="row"><input type="checkbox" name="remember"> Use these as my defaults</label>
     <div class="actions"><span class="spacer"></span>
       <button value="cancel" formnovalidate class="ghost">Cancel</button>
       <button value="start" class="primary">Start</button></div>
+  </form>
+</dialog>
+
+<dialog id="addfiles-dialog" aria-labelledby="addfiles-title">
+  <form method="dialog">
+    <h2 id="addfiles-title">Add files</h2>
+    <p class="muted" id="addfiles-count"></p>
+    <label>Lyrics (optional — used instead of online lookup)
+      <textarea name="lyrics" rows="10" spellcheck="false"
+        placeholder="Paste the lyrics, one sung line per line. Empty = looked up online."></textarea>
+    </label>
+    <div class="actions"><span class="spacer"></span>
+      <button value="cancel" formnovalidate class="ghost">Cancel</button>
+      <button value="add" class="primary">Continue</button></div>
   </form>
 </dialog>
 

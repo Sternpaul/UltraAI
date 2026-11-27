@@ -38,6 +38,8 @@ function library() {
   let query = "";
   const list = h("div", { class: "songs", role: "list" });
   const urlIn = h("input", { type: "url", placeholder: "Paste a YouTube link…", "aria-label": "YouTube link" });
+  const lyricsIn = h("textarea", { rows: 6, spellcheck: "false", "aria-label": "Lyrics (optional)",
+    placeholder: "Paste the lyrics, one sung line per line. Empty = looked up online." });
   const fileIn = h("input", { type: "file", multiple: true, accept: "audio/*,video/*", hidden: true });
   const filterBtns = FILTERS.map(([k, label]) =>
     h("button", { type: "button", class: "small", "aria-pressed": String(k === filter),
@@ -51,11 +53,13 @@ function library() {
     e.preventDefault();
     const url = urlIn.value.trim();
     if (!url) return;
+    const lyrics = lyricsIn.value;
     const options = await processDialog("Add song – processing options");
     if (!options) return;
     try {
-      await api("/api/songs/url", { method: "POST", json: { url, options } });
+      await api("/api/songs/url", { method: "POST", json: { url, options, lyrics } });
       urlIn.value = "";
+      lyricsIn.value = "";
       toast("Downloading…");
       load();
     } catch (err) { toast(`Could not add: ${err.message}`); }
@@ -66,7 +70,10 @@ function library() {
     h("form", { class: "addbar", onsubmit: addUrl },
       urlIn, h("button", { class: "primary" }, "Add link"),
       h("button", { type: "button", onclick: () => fileIn.click() }, "Add files…"), fileIn,
-      h("span", { class: "muted" }, "or drop audio files anywhere")),
+      h("span", { class: "muted" }, "or drop audio files anywhere"),
+      h("details", { class: "addlyrics" },
+        h("summary", {}, "Lyrics (optional — used instead of online lookup)"),
+        lyricsIn)),
     h("div", { class: "filters" }, filterBtns, counts, search),
     list));
 
@@ -92,8 +99,9 @@ function library() {
     if (s.state === "needs_lyrics") acts.push(h("button", { type: "button", class: "primary", onclick: () => lyricsDialog(s.id, load) }, "Add lyrics"));
     if (["error", "needs_review", "reviewed", "needs_lyrics"].includes(s.state))
       acts.push(h("button", { type: "button", class: "ghost small", title: "Process again", onclick: () => reprocess(s) }, "↻"));
-    if (["needs_review", "reviewed", "error"].includes(s.state))
-      acts.push(h("button", { type: "button", class: "ghost small", title: "Replace the lyrics", onclick: () => lyricsDialog(s.id, load) }, "Lyrics"));
+    if (["queued", "downloading", "needs_review", "reviewed", "error"].includes(s.state))
+      acts.push(h("button", { type: "button", class: "ghost small", title: "Set or replace the lyrics (used on the next run)",
+        onclick: () => lyricsDialog(s.id, load) }, "Lyrics"));
     acts.push(h("button", { type: "button", class: "ghost small", title: "Saved versions of the song text", "aria-label": `Versions of ${s.title}`,
       onclick: () => versionsDialog(s, load) }, "🕘"));
     if (/^https?:/.test(s.source || "") && (!s.video || !s.cover) && s.state !== "downloading")
@@ -286,11 +294,15 @@ function sessionStorageSet(k, v) { try { sessionStorage.setItem(`ultraai.${k}`, 
 async function upload(files) {
   files = files.filter(f => f.type.startsWith("audio/") || f.type.startsWith("video/") || /\.(mp3|m4a|ogg|opus|flac|wav|aac|webm)$/i.test(f.name));
   if (!files.length) return toast("No audio files in the selection");
-  const options = await processDialog(`Add ${files.length} song${files.length > 1 ? "s" : ""} – processing options`);
+  const lyrics = await addFilesDialog(files.length);
+  if (lyrics === null) return;
+  const options = await processDialog(`Add ${files.length} song${files.length > 1 ? "s" : ""} – processing options`, null,
+    files.length > 1 && lyrics.trim() ? `The same lyrics will be added to all ${files.length} songs.` : "");
   if (!options) return;
   const form = new FormData();
   for (const f of files) form.append("files", f);
   form.append("options", JSON.stringify(options));
+  if (lyrics.trim()) form.append("lyrics", lyrics);
   toast(`Uploading ${files.length} file${files.length > 1 ? "s" : ""}…`, 10000);
   try {
     await api("/api/songs/files", { method: "POST", form });
@@ -310,19 +322,37 @@ addEventListener("drop", e => {
   upload([...e.dataTransfer.files]);
 });
 
+// ------------------------------------------------------------------ add-files dialog (optional lyrics)
+/** Ask for lyrics before the processing options; resolves to the text, or null when cancelled. */
+function addFilesDialog(count) {
+  const dlg = document.getElementById("addfiles-dialog");
+  document.getElementById("addfiles-count").textContent =
+    `${count} file${count > 1 ? "s" : ""} selected. Lyrics apply to every file added here.`;
+  const ta = dlg.querySelector("textarea[name=lyrics]");
+  ta.value = "";
+  dlg.returnValue = "";
+  dlg.showModal();
+  return new Promise(resolve => dlg.addEventListener("close", () => {
+    resolve(dlg.returnValue === "add" ? ta.value : null);
+  }, { once: true }));
+}
+
 // ------------------------------------------------------------------ processing options
 let modelsCache = null;
 const SONG_S = 210;   // estimate for a 3½-minute song
 const FIXED_RATE = 0.5 + 0.35 + 0.12;   // analysis, listening, aligning (s per s of audio)
 
 /** Ask how to process: resolves to the options object, or null when cancelled. */
-export async function processDialog(title = "Processing options", start = null) {
+export async function processDialog(title = "Processing options", start = null, note = "") {
   const [models, settings] = await Promise.all([modelsCache ?? api("/api/models"), api("/api/settings")]);
   modelsCache = models;
   const o = { separation: "htdemucs", pitch: "swift", pitch_check: ["rmvpe"], sep_check: [], lead: "", notes: "singer",
     ...(settings.defaults || {}), ...(start || {}) };
   const dlg = document.getElementById("process-dialog"), box = document.getElementById("process-opts");
   document.getElementById("process-title").textContent = title;
+  const noteEl = document.getElementById("process-note");
+  noteEl.textContent = note;
+  noteEl.hidden = !note;
   const best = (g, kind) => {  // best measured timing / pitch in a group, for the ★ marks
     const b = models[g].filter(m => m[kind]);
     return { timing: Math.max(...b.map(m => m[kind].timing ?? 0)), pitch: Math.max(...b.map(m => m[kind].pitch)) };
