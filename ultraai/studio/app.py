@@ -2,15 +2,21 @@
 
     ultraai studio [--port 8766] [--no-window]
 
-Binds to 127.0.0.1 only.  Mutating requests must carry ``x-ultraai: <token>`` — the
-per-install token from ``token.txt`` in the config dir (injected into index.html as a
-meta tag) — compared with hmac.compare_digest, so a browser page from another site
-cannot add that header without a CORS preflight, which we never allow.  Every request
-must also carry a matching ``Host`` header (DNS-rebinding protection).
+Binds to 127.0.0.1 only.  Every request that is not plain GET must carry
+``x-ultraai: <token>`` — the per-install token from ``token.txt`` in the config dir
+(injected into index.html as a meta tag) — compared with hmac.compare_digest, so a
+browser page from another site cannot add that header without a CORS preflight, which
+we never allow.  The SSE stream ``GET /api/events`` takes the same token in the header
+too (the web client consumes it with fetch streaming, not EventSource), so the token
+never appears in a URL or query string: with ``trace`` logging, request lines (including
+query strings) end up in the log ring shown in the app, so query strings must stay
+secret-free.  Every request must also carry a matching ``Host`` header
+(DNS-rebinding protection).
 """
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
@@ -20,8 +26,9 @@ import traceback
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from ..ultrastar.reader import read
 from ..ultrastar.validator import validate
@@ -30,7 +37,8 @@ from .config import Settings, atomic_write, load_token
 from .doc import DocError, doc_to_song, song_to_doc
 from .logs import TRACE, LEVELS, ring
 from .processors import Cancelled
-from .store import Library, SongState, VersionConflict
+from .store import (GOLDEN_CUSTOM, GOLDEN_PRESETS, GOLDEN_SHARE_MAX, Library, SongState, VersionConflict,
+                    effective_links, save_user_lyrics, song_ytid)
 
 log = logging.getLogger("ultraai.studio")
 
@@ -38,6 +46,139 @@ log = logging.getLogger("ultraai.studio")
 WEB = Path(__file__).with_name("web")
 
 MAX_UPLOAD = 2 * 1024 ** 3  # 2 GiB per POST /api/songs/files
+MAX_LYRICS = 20_000         # characters of user-pasted lyrics per song
+MAX_EVENT_CLIENTS = 20      # concurrent GET /api/events streams
+EVENT_QUEUE_MAX = 100       # events buffered per SSE client; drop-oldest on overflow
+EVENT_TICK = 1.0            # s: the event watcher polls the library rev + log cursor this often
+EVENT_PING = 15.0           # s without any event before the stream sends a ": ping" comment
+
+
+def _sse(event: str, data, event_id: int | None = None) -> str:
+    """One Server-Sent-Events frame (the JSON payload is a single data: line)."""
+    out = f"id: {event_id}\n" if event_id is not None else ""
+    return out + f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+class EventBus:
+    """Fan-out behind GET /api/events: one asyncio task polls the library version counter
+    (Library.rev) and the log ring once per second and pushes the full /api/songs payload
+    / the new log entries onto a per-client asyncio.Queue.  All blocking store/ring work
+    runs in a worker thread, so the event loop is never blocked."""
+
+    def __init__(self, lib: Library, songs_payload):
+        self.lib, self.songs_payload = lib, songs_payload
+        self.clients: set[asyncio.Queue] = set()
+        self._task: asyncio.Task | None = None
+        self._last_rev = 0
+        self._last_log_id = 0
+
+    def start(self):
+        self._last_rev = self.lib.rev
+        self._last_log_id = ring.last_id
+        self._task = asyncio.create_task(self._watch(), name="studio-events")
+
+    def stop(self):
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+
+    def _peek(self) -> tuple[int, int]:
+        return self.lib.rev, ring.last_id
+
+    def _collect(self):
+        """Worker-thread snapshot: (rev, songs payload if changed, new log entries)."""
+        rev, log_id = self.lib.rev, ring.last_id
+        payload = self.songs_payload() if rev != self._last_rev else None
+        entries = ring.since(self._last_log_id, TRACE) if log_id != self._last_log_id else []
+        return rev, payload, entries
+
+    def _broadcast(self, item: tuple):
+        # Per-client queues are bounded so a slow client cannot accumulate full song
+        # payloads.  On overflow the *oldest* event is dropped: every `songs` event is a
+        # full snapshot (the next one re-syncs the client) and a dropped `log` batch is
+        # re-delivered after a reconnect via the `after` cursor - lossy by design.
+        for q in list(self.clients):
+            try:
+                q.put_nowait(item)
+            except asyncio.QueueFull:
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    q.put_nowait(item)
+                except asyncio.QueueFull:  # pragma: no cover - needs a racing consumer
+                    pass
+
+    async def _watch(self):
+        while True:
+            await asyncio.sleep(EVENT_TICK)
+            try:
+                if self.clients:
+                    rev, payload, entries = await run_in_threadpool(self._collect)
+                    if payload is not None:
+                        self._last_rev = rev
+                        self._broadcast(("songs", payload))
+                    if entries:
+                        self._last_log_id = entries[-1]["id"]
+                        self._broadcast(("log", entries))
+                else:  # nobody listening: keep the cursors warm without building payloads
+                    self._last_rev, self._last_log_id = await run_in_threadpool(self._peek)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the watcher must never die
+                log.exception("event watcher failed")
+
+
+class Guard:
+    """PR #10 hardening (Host check, upload limit, ``x-ultraai`` token on mutating
+    routes) as a plain-ASGI middleware.  It must NOT be BaseHTTPMiddleware: the SSE
+    endpoint polls ``Request.is_disconnected()`` on every quiet tick to reap gone
+    clients, and behind BaseHTTPMiddleware that probe — a receive call inside a
+    pre-cancelled scope — dies inside the middleware's internal task group and can
+    never see the server's ``http.disconnect``.  A raw wrapper passes ``receive``
+    through unchanged, so the probe reaches the real connection state."""
+
+    def __init__(self, app, token: str, allowed_hosts: set[str], max_upload: int):
+        self.app, self.token, self.allowed_hosts, self.max_upload = app, token, allowed_hosts, max_upload
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        h = {k.decode("latin-1").lower(): v.decode("latin-1")
+             for k, v in scope.get("headers") or []}
+        method, path = scope["method"], scope["path"]
+        # DNS-rebinding protection: only our own host names on our port are accepted
+        host = (h.get("host") or "").strip().lower()
+        if host not in self.allowed_hosts:
+            log.warning("refused %s %s with Host %r", method, path, host or "<missing>")
+            await JSONResponse({"detail": "unexpected Host header"}, status_code=403)(scope, receive, send)
+            return
+        if (method == "POST" and path == "/api/songs/files"
+                and (cl := h.get("content-length", "")).isdigit() and int(cl) > self.max_upload):
+            log.warning("refused %s %s: Content-Length %s over the limit", method, path, cl)
+            await JSONResponse({"detail": f"upload too large (max {self.max_upload // 2**30} GiB)"},
+                               status_code=413)(scope, receive, send)
+            return
+        if method not in ("GET", "HEAD", "OPTIONS"):
+            sent = h.get("x-ultraai", "").encode("utf-8", "ignore")
+            if not hmac.compare_digest(sent, self.token.encode("utf-8")):
+                log.warning("refused %s %s without a valid x-ultraai token", method, path)
+                await JSONResponse({"detail": "missing or wrong x-ultraai token"},
+                                   status_code=403)(scope, receive, send)
+                return
+        t0 = time.time()
+
+        async def guarded_send(message):
+            if message["type"] == "http.response.start":
+                log.log(TRACE, "%s %s -> %s (%.0f ms)", method, path, message["status"],
+                        1000 * (time.time() - t0))
+                if message["status"] >= 500:
+                    log.error("%s %s -> %s", method, path, message["status"])
+            await send(message)
+
+        await self.app(scope, receive, guarded_send)
 
 
 # ---------------------------------------------------------------- processing queue
@@ -154,6 +295,7 @@ class Queue:
 class UrlIn(BaseModel):
     url: str
     options: dict | None = None
+    lyrics: str | None = None       # pasted at add time: used instead of the online lookup
 
 
 class OptionsIn(BaseModel):
@@ -166,6 +308,21 @@ class MetaIn(BaseModel):
     title: str | None = None
     language: str | None = None
     priority: int | None = None
+    video_url: str | None = None           # explicit video link (USDB v=); "" = derive
+    cover_url: str | None = None           # explicit cover link (USDB co=); "" = derive
+
+
+MAX_LINK = 500  # cap for the video/cover link overrides in PATCH /api/songs/{sid}
+
+
+def media_link(field: str, value: str) -> str:
+    """Validate a video/cover link override: empty, or an http(s) URL of at most MAX_LINK chars."""
+    v = (value or "").strip()
+    if len(v) > MAX_LINK:
+        raise HTTPException(400, f"{field} is too long (max {MAX_LINK} characters)")
+    if v and not v.startswith(("http://", "https://")):
+        raise HTTPException(400, f"{field} must be an http(s) link or empty, got {v[:64]!r}")
+    return v
 
 
 class LyricsIn(BaseModel):
@@ -176,6 +333,7 @@ class DocIn(BaseModel):
     doc: dict
     note: str = "edit"
     base_version: int = 0               # optimistic concurrency: must equal the current doc_version
+    golden: dict | None = None          # optional {"preset": ..., "share": ...} golden-notes setting
 
 
 class KeyIn(BaseModel):
@@ -186,6 +344,28 @@ def issue_key(i: dict) -> str:
     return f"{i.get('kind')}:{i.get('start', 0):.2f}:{(i.get('text') or '')[:24]}"
 
 
+def validate_problems(song, folder) -> tuple[list[str], list[dict]]:
+    """User-facing validation problems of a saved txt: plain strings (legacy clients)
+    plus structured details (level/code/message/voice/line/beat) for the editor's
+    Issues tab with jump-to."""
+    issues = [i for i in validate(song, folder) if i.level in ("error", "warning")]
+    details = [{"level": i.level, "code": i.code, "message": i.message,
+                "voice": i.voice, "line": i.line, "beat": i.beat} for i in issues]
+    return [str(i) for i in issues], details
+
+
+def check_golden(g: dict) -> tuple[str, float]:
+    """Validate a PUT /doc ``golden`` field -> (preset, share); 400 on bad input."""
+    preset = g.get("preset", "")
+    share = g.get("share", 0.04)
+    if preset not in ("", GOLDEN_CUSTOM, *GOLDEN_PRESETS):
+        raise HTTPException(400, f"unknown golden preset {preset!r}")
+    if isinstance(share, bool) or not isinstance(share, (int, float)) \
+            or not 0 < float(share) <= GOLDEN_SHARE_MAX:
+        raise HTTPException(400, f"golden share must be a number in (0, {GOLDEN_SHARE_MAX}]")
+    return preset, float(share)
+
+
 def create_app(settings: Settings, processor_factory=None, start_queue: bool = True,
                token: str | None = None, port: int = 8766) -> FastAPI:
     lib = Library(Path(settings.library))
@@ -194,43 +374,32 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     if processor_factory is None:
         processor_factory = lambda: make_processor(settings, lib)  # noqa: E731
     queue = Queue(lib, processor_factory, slots=2 if settings.processor == "ssh" else 1)
+
+    def songs_payload() -> list:
+        """The /api/songs body (also pushed as `songs` SSE events when the library changes)."""
+        order = {s: k for k, s in enumerate(("processing", "downloading", "needs_lyrics", "needs_review",
+                                              "queued", "error", "reviewed", "imported"))}
+        items = [card(s) for s in lib.all()]
+        items.sort(key=lambda c: (order.get(c["state"], 9), -c["open_issues"], -c["updated"]))
+        return items
+
+    bus = EventBus(lib, songs_payload)
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
     async def lifespan(_app):
+        bus.start()
         if start_queue:
             queue.start()
         yield
         queue.stop()
+        bus.stop()
 
     app = FastAPI(title="UltraAI Studio", lifespan=lifespan)
     app.state.lib, app.state.queue, app.state.settings = lib, queue, settings
-    app.state.token, app.state.port = token, port
+    app.state.token, app.state.port, app.state.bus = token, port, bus
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
-
-    @app.middleware("http")
-    async def guard(request: Request, call_next):
-        # DNS-rebinding protection: only our own host names on our port are accepted
-        host = (request.headers.get("host") or "").strip().lower()
-        if host not in allowed_hosts:
-            log.warning("refused %s %s with Host %r", request.method, request.url.path, host or "<missing>")
-            return JSONResponse({"detail": "unexpected Host header"}, status_code=403)
-        if (request.method == "POST" and request.url.path == "/api/songs/files"
-                and (cl := request.headers.get("content-length", "")).isdigit() and int(cl) > MAX_UPLOAD):
-            log.warning("refused %s %s: Content-Length %s over the limit", request.method, request.url.path, cl)
-            return JSONResponse({"detail": f"upload too large (max {MAX_UPLOAD // 2**30} GiB)"}, status_code=413)
-        if request.method not in ("GET", "HEAD", "OPTIONS"):
-            sent = request.headers.get("x-ultraai", "").encode("utf-8", "ignore")
-            if not hmac.compare_digest(sent, token.encode("utf-8")):
-                log.warning("refused %s %s without a valid x-ultraai token", request.method, request.url.path)
-                return JSONResponse({"detail": "missing or wrong x-ultraai token"}, status_code=403)
-        t = time.time()
-        resp = await call_next(request)
-        log.log(TRACE, "%s %s -> %s (%.0f ms)", request.method, request.url.path, resp.status_code,
-                1000 * (time.time() - t))
-        if resp.status_code >= 500:
-            log.error("%s %s -> %s", request.method, request.url.path, resp.status_code)
-        return resp
+    app.add_middleware(Guard, token=token, allowed_hosts=allowed_hosts, max_upload=MAX_UPLOAD)
 
     def get_state(sid: str) -> SongState:
         try:
@@ -242,20 +411,82 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         d = {k: getattr(st, k) for k in ("id", "artist", "title", "language", "state", "stage", "error",
                                          "source", "created", "updated", "priority", "issues",
                                          "lyrics_source", "video", "cover", "progress", "lyrics_info",
-                                         "options")}
+                                         "options", "video_url", "cover_url", "golden_preset", "golden_share")}
         d["open_issues"] = max(0, st.issues - len(st.dismissed))
         # the song-level check stays visible in the list until its issue is marked OK
         d["warning"] = "" if any(k.startswith("song_check:") for k in st.dismissed) else st.warning
+        # the effective media links (override, else derived from the song's YouTube id)
+        d["video_link"], d["cover_link"] = effective_links(lib, st)
         return d
 
     # ---- library / queue -----------------------------------------------------------
     @app.get("/api/songs")
     def songs():
-        order = {s: k for k, s in enumerate(("processing", "downloading", "needs_lyrics", "needs_review",
-                                              "queued", "error", "reviewed", "imported"))}
-        items = [card(s) for s in lib.all()]
-        items.sort(key=lambda c: (order.get(c["state"], 9), -c["open_issues"], -c["updated"]))
-        return items
+        return songs_payload()
+
+    @app.get("/api/events")
+    async def events(request: Request, after: int = 0):
+        """SSE stream (text/event-stream): a `songs` event with the full /api/songs payload
+        whenever the library changes, and `log` events with new ring-buffer entries.
+
+        Authenticated with the x-ultraai header like every other route (the web client
+        owns the reconnects, so it can use fetch streaming instead of EventSource - the
+        token must never reach the URL: trace logging puts query strings into the log
+        ring).  The log cursor resumes from Last-Event-ID or ?after=."""
+        sent = request.headers.get("x-ultraai", "").encode("utf-8", "ignore")
+        if not hmac.compare_digest(sent, app.state.token.encode("utf-8")):
+            log.warning("refused GET /api/events without a valid x-ultraai token")
+            return JSONResponse({"detail": "missing or wrong x-ultraai token"}, status_code=403)
+        last_id = (request.headers.get("last-event-id") or "").strip()
+        if last_id.isdigit():
+            after = max(after, int(last_id))
+        if len(bus.clients) >= MAX_EVENT_CLIENTS:
+            return JSONResponse({"detail": "too many event clients"}, status_code=503)
+
+        async def stream():
+            q: asyncio.Queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
+            sent_log = after
+            try:
+                # Initial state: snapshot the library and log backlog *before*
+                # registering the queue - a broadcast racing the snapshot would be
+                # delivered after (and is thus staler than) the snapshot we just sent.
+                payload = await run_in_threadpool(songs_payload)
+                backlog = await run_in_threadpool(ring.since, after, TRACE)
+                if backlog:
+                    sent_log = backlog[-1]["id"]
+                bus.clients.add(q)  # removed in the finally, also on client disconnect
+                yield _sse("songs", payload)
+                if backlog:
+                    yield _sse("log", backlog, event_id=sent_log)
+                idle = 0.0
+                while True:
+                    try:
+                        kind, data = await asyncio.wait_for(q.get(), timeout=EVENT_TICK)
+                    except asyncio.TimeoutError:
+                        # Relying on Starlette cancelling the generator alone proves
+                        # unreliable, so poll the connection explicitly: a client that
+                        # went away costs at most one tick of bus.clients memory.
+                        if await request.is_disconnected():
+                            break
+                        idle += EVENT_TICK
+                        if idle >= EVENT_PING:
+                            idle = 0.0
+                            yield ": ping\n\n"  # keep the connection alive through proxies
+                        continue
+                    idle = 0.0
+                    if kind == "log":
+                        data = [e for e in data if e["id"] > sent_log]  # dedup vs the backlog
+                        if not data:
+                            continue
+                        sent_log = data[-1]["id"]
+                        yield _sse("log", data, event_id=sent_log)
+                    else:
+                        yield _sse("songs", data)
+            finally:
+                bus.clients.discard(q)
+
+        return StreamingResponse(stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.post("/api/songs/url")
     def add_url(body: UrlIn):
@@ -264,13 +495,16 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         url = body.url.strip()
         if not url.startswith(("http://", "https://")):
             raise HTTPException(400, "not a link")
+        lyrics = (body.lyrics or "").strip()
+        if len(lyrics) > MAX_LYRICS:
+            raise HTTPException(400, f"lyrics too long (max {MAX_LYRICS} characters)")
         holder: dict = {}
 
         opts = body.options or dict(settings.defaults)
 
         def work():
             try:
-                st = import_youtube(lib, url, settings=settings, options=opts,
+                st = import_youtube(lib, url, settings=settings, options=opts, lyrics=lyrics,
                                     progress=lambda m: holder.get("id") and lib.update(holder["id"], stage=m))
                 holder["id"] = st.id
                 queue.poke()
@@ -281,7 +515,8 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         return {"ok": True}
 
     @app.post("/api/songs/files")
-    async def add_files(files: list[UploadFile] = File(...), options: str = Form("")):
+    async def add_files(files: list[UploadFile] = File(...), options: str = Form(""),
+                        lyrics: str = Form("")):
         import tempfile
 
         from .importer import import_file
@@ -290,6 +525,9 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
             opts = json.loads(options) if options else dict(settings.defaults)
         except ValueError:
             raise HTTPException(400, "bad options") from None
+        text = lyrics.strip()
+        if len(text) > MAX_LYRICS:
+            raise HTTPException(400, f"lyrics too long (max {MAX_LYRICS} characters)")
         out = []
         for f in files:
             suffix = Path(f.filename or "audio").suffix.lower()
@@ -303,7 +541,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
                         if size > MAX_UPLOAD:  # abort mid-stream, not just via Content-Length
                             raise HTTPException(413, f"upload too large (max {MAX_UPLOAD // 2**30} GiB)")
                         tmp.write(chunk)
-                st = import_file(lib, Path(tmp_name), original_name=f.filename, move=True)
+                st = import_file(lib, Path(tmp_name), original_name=f.filename, move=True, lyrics=text)
                 st = lib.update(st.id, options=opts)
                 out.append(card(st))
             finally:  # never leak the temp file (import_file may have moved it away already)
@@ -328,6 +566,9 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
     def edit_meta(sid: str, body: MetaIn):
         get_state(sid)
         kw = {k: v for k, v in body.model_dump().items() if v is not None}
+        for k in ("video_url", "cover_url"):
+            if k in kw:
+                kw[k] = media_link(k, kw[k])
         st = lib.update(sid, **kw)
         if "artist" in kw or "title" in kw:
             try:
@@ -336,6 +577,24 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
                 raise HTTPException(409, f"could not rename the song folder (file in use?): {exc}") from None
             st = lib.state(sid)
         return card(st)
+
+    @app.get("/api/songs/{sid}/versions")
+    def list_versions(sid: str):
+        """Every saved txt version of the song: [{name, mtime, size, what}], oldest first."""
+        get_state(sid)
+        return lib.versions(sid)
+
+    @app.post("/api/songs/{sid}/versions/{name}/restore")
+    def restore_version(sid: str, name: str):
+        """Copy version ``name`` over the current txt (atomic); the current txt is saved as a
+        new 'pre-restore' version first and doc_version is bumped (open editors then get a 409)."""
+        get_state(sid)
+        try:
+            return lib.restore_version(sid, name)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except KeyError as exc:
+            raise HTTPException(404, f"no such version: {exc.args[0]}") from None
 
     @app.get("/api/songs/{sid}/usdb")
     def usdb(sid: str):
@@ -349,12 +608,19 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         txt = lib.txt_path(sid)
         if txt is None:
             raise HTTPException(404, "song has not been processed yet")
-        return PlainTextResponse(usdb_text(txt.read_text(encoding="utf-8"), st.source))
+        # the dialog's overrides win; empty ones derive from the song's YouTube id as before
+        return PlainTextResponse(usdb_text(txt.read_text(encoding="utf-8"), st.source,
+                                           st.video_url, st.cover_url, song_ytid(lib, st) or ""))
 
     @app.post("/api/songs/{sid}/lyrics")
     def set_lyrics(sid: str, body: LyricsIn):
+        """Store the user's lyrics and re-queue the song — unless it is still downloading:
+        there is no (full) audio yet, so the queue must not pick it up; the import thread
+        queues it as usual once the audio has landed, and the run then uses these lyrics."""
         st = get_state(sid)
-        atomic_write(lib.studio_dir(sid) / "lyrics.txt", (body.text.strip() + "\n").encode("utf-8"))
+        save_user_lyrics(lib, sid, body.text)
+        if st.state == "downloading":
+            return {"ok": True}
         lib.update(sid, state="queued", stage="", error="", priority=max(st.priority, 1), job={})
         queue.poke()
         return {"ok": True}
@@ -385,7 +651,8 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         from .importer import fetch_extras
 
         st = get_state(sid)
-        if not st.source.startswith(("http://", "https://")):
+        if not (st.source.startswith(("http://", "https://"))
+                or st.video_url.startswith(("http://", "https://"))):
             raise HTTPException(400, "this song was not added from a link")
 
         def work():
@@ -412,6 +679,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         if txt is None:
             raise HTTPException(404, "song has not been processed yet")
         song = read(txt)
+        problems, problem_details = validate_problems(song, txt.parent)
         side = {}
         sp = txt.with_suffix(".ultraai.json")
         if sp.exists():
@@ -425,11 +693,13 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         base = f"/api/songs/{sid}/media"
         return {"doc": song_to_doc(song), "issues": issues, "state": st.state, "dismissed": st.dismissed,
                 "doc_version": st.doc_version,
+                "problems": problems, "problem_details": problem_details,
                 "audio": f"{base}/audio" if st.audio or song.audio else None,
                 "vocals": f"{base}/vocals" if (sd / "vocals.ogg").exists() else None,
                 "editor": f"{base}/editor" if (sd / "editor.json").exists() else None,
                 "lyrics_source": side.get("lyrics_source", st.lyrics_source),
-                "lyrics_info": side.get("lyrics") or st.lyrics_info or {}}
+                "lyrics_info": side.get("lyrics") or st.lyrics_info or {},
+                "golden": {"preset": st.golden_preset, "share": st.golden_share}}
 
     @app.put("/api/songs/{sid}/doc")
     def put_doc(sid: str, body: DocIn):
@@ -441,15 +711,19 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
             song = doc_to_song(body.doc)
         except (DocError, KeyError, TypeError, ValueError) as exc:
             raise HTTPException(400, f"invalid song: {exc}") from None
+        golden = check_golden(body.golden) if body.golden is not None else None  # 400 on bad preset/share
         try:
             st = lib.bump_doc_version(sid, body.base_version)  # 409 on a stale base_version
         except VersionConflict as exc:
             raise HTTPException(409, f"the song changed on the server ({exc}); reload to get it") from None
+        if golden is not None:
+            st = lib.update(sid, golden_preset=golden[0], golden_share=golden[1])
         text = dumps(song)
         lib.save_version(sid, text, body.note or "edit")
         atomic_write(txt, text.encode("utf-8"))
-        problems = [str(i) for i in validate(read(txt), txt.parent) if i.level in ("error", "warning")]
-        return {"ok": True, "problems": problems, "saved": time.time(), "doc_version": st.doc_version}
+        problems, problem_details = validate_problems(read(txt), txt.parent)
+        return {"ok": True, "problems": problems, "problem_details": problem_details,
+                "saved": time.time(), "doc_version": st.doc_version}
 
     @app.post("/api/songs/{sid}/issues/dismiss")
     def dismiss(sid: str, body: KeyIn):
@@ -559,12 +833,20 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         return ring.since(after, LEVELS.get(level, logging.INFO))
 
     @app.get("/api/songs/{sid}/worker-log")
-    def worker_log(sid: str):
+    def worker_log(sid: str, after: int = 0):
+        """The song's server log.  While the job runs a background tailer keeps filling the
+        file, so this returns partial content live; ``?after=<bytes>`` returns only the bytes
+        past that offset (for incremental polling) plus X-Total-Size with the full size."""
         get_state(sid)
         f = lib.folder(sid) / ".studio" / "worker.log"
         from fastapi.responses import PlainTextResponse
 
-        return PlainTextResponse(f.read_text(encoding="utf-8", errors="replace") if f.exists() else "")
+        data = f.read_bytes() if f.exists() else b""
+        if after < 0:
+            after = 0
+        resp = PlainTextResponse(data[after:].decode("utf-8", "replace"))
+        resp.headers["X-Total-Size"] = str(len(data))
+        return resp
 
     if WEB.exists():
         from fastapi.staticfiles import StaticFiles

@@ -1,5 +1,6 @@
-// Small client for the Studio backend.  Mutating requests carry the per-install token
-// (injected into index.html as a meta tag) in the x-ultraai header.
+// Small client for the Studio backend.  Requests carry the per-install token (injected
+// into index.html as a meta tag) in the x-ultraai header — including the SSE stream,
+// which events.js consumes with fetch streaming, not EventSource.
 
 export class ApiError extends Error {
   constructor(msg, status) {
@@ -8,7 +9,7 @@ export class ApiError extends Error {
   }
 }
 
-const TOKEN = document.querySelector('meta[name="ultraai-token"]')?.content || "";
+export const TOKEN = document.querySelector('meta[name="ultraai-token"]')?.content || "";
 
 export async function api(path, { method = "GET", json, form } = {}) {
   const opts = { method, headers: {} };
@@ -30,12 +31,30 @@ export async function api(path, { method = "GET", json, form } = {}) {
 }
 
 let toastTimer;
-export function toast(msg, ms = 2800) {
+
+function hideToast() {
+  clearTimeout(toastTimer);
   const el = document.getElementById("toast");
-  el.textContent = msg;
+  el.classList.remove("show");
+  el.classList.remove("has-action");
+}
+
+/** toast(msg, msNumber) as before, or toast(msg, { ms, action: { label, fn } }).
+ *  ms 0 (or Infinity) keeps the toast until it is clicked; an action button is
+ *  appended and clicking it hides the toast and runs fn. */
+export function toast(msg, opts = 2800) {
+  const el = document.getElementById("toast");
+  const ms = typeof opts === "number" ? opts : (opts?.ms ?? 2800);
+  const action = typeof opts === "object" && opts !== null ? opts.action : null;
+  el.replaceChildren(String(msg));
+  el.classList.toggle("has-action", !!action);
+  if (action) {
+    el.append(" ", h("button", { type: "button", class: "toast-action",
+      onclick: () => { hideToast(); action.fn(); } }, action.label));
+  }
   el.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove("show"), ms);
+  if (ms > 0 && Number.isFinite(ms)) toastTimer = setTimeout(hideToast, ms);
 }
 
 export function h(tag, props = {}, ...children) {

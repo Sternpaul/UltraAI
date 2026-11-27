@@ -45,21 +45,24 @@ def work_dir(audio: Path) -> Path:
     return d
 
 
-def to_wav(audio: Path, out: Path, sr: int = 44100, mono: bool = False) -> Path:
-    """Decode any format with ffmpeg."""
+def to_wav(audio: Path, out: Path, sr: int = 44100, mono: bool = False,
+           env: dict | None = None) -> Path:
+    """Decode any format with ffmpeg.  ``env`` (e.g. worker.subprocess_env) is passed to the
+    subprocess only; None inherits the process environment, as before."""
     if not out.exists():
         cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(audio), "-ar", str(sr)]
         if mono:
             cmd += ["-ac", "1"]
-        subprocess.run(cmd + [str(out)], check=True)
+        subprocess.run(cmd + [str(out)], check=True, env=env)
     return out
 
 
-def separate(audio: Path, model: str = DEFAULT_SEPARATION, need_instrumental: bool = True) -> tuple[Path, Path]:
+def separate(audio: Path, model: str = DEFAULT_SEPARATION, need_instrumental: bool = True,
+             env: dict | None = None) -> tuple[Path, Path]:
     """Return (vocals.wav, instrumental.wav), computing them once per audio file and model.
 
     ``need_instrumental=False``: the cached vocals suffice even if the (large) instrumental
-    stem was deleted to save disk space.
+    stem was deleted to save disk space.  ``env`` is forwarded to the ffmpeg decode only.
     """
     wd = work_dir(audio)
     vocals, instr = wd / f"vocals.{model}.wav", wd / f"instrumental.{model}.wav"
@@ -68,7 +71,7 @@ def separate(audio: Path, model: str = DEFAULT_SEPARATION, need_instrumental: bo
 
     from audio_separator.separator import Separator  # heavy import
 
-    src = to_wav(audio, wd / "mix.wav")
+    src = to_wav(audio, wd / "mix.wav", env=env)
     tmp = wd / f"sep_{model}"
     tmp.mkdir(exist_ok=True)
     sep = Separator(output_dir=str(tmp), model_file_dir=str(MODEL_DIR), log_level=logging.WARNING)

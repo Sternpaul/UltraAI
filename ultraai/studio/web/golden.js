@@ -102,3 +102,51 @@ export function applyPreset(lines, preset, editor, share = 0.04) {
   for (const g of chosen) for (const n of g.notes) if (n.kind === ":") n.kind = "*";
   return chosen.size;
 }
+
+// ---------------------------------------------------------------- persisted state
+// The per-song golden setting: { preset: PRESETS id | "custom" | "", share: fraction }.
+// "" = nothing chosen yet, "custom" = the user toggled notes by hand (share kept).
+
+export const DEFAULT_GOLDEN = { preset: "", share: 0.04 };
+export const SHARE_MAX = 0.5;
+
+const presetIds = () => new Set(PRESETS.map(p => p[0]));
+
+function validPreset(p) { return p === "" || p === "custom" || presetIds().has(p); }
+
+/** In-range share as-is, out-of-range clamped, nonsense -> null. */
+function clampShare(s) { return Number.isFinite(s) && s > 0 ? Math.min(s, SHARE_MAX) : null; }
+
+/** Only a share the server would have accepted; anything else -> null. */
+function saneShare(s) { return Number.isFinite(s) && s > 0 && s <= SHARE_MAX ? s : null; }
+
+/** Coerce anything (e.g. the server's GET /doc payload) into a well-formed golden state. */
+export function normalizeGolden(g) {
+  const preset = typeof g?.preset === "string" && validPreset(g.preset) ? g.preset : DEFAULT_GOLDEN.preset;
+  const share = saneShare(Number(g?.share)) ?? DEFAULT_GOLDEN.share;
+  return { preset, share };
+}
+
+/** Pure state transition for the golden control.
+ *  action {type:"preset", preset, share} -> apply a preset (invalid preset ignored, share kept on bad share)
+ *  action {type:"toggle"}                  -> a note was toggled by hand: preset becomes "custom", share kept. */
+export function nextGoldenState(current, action) {
+  const cur = normalizeGolden(current);
+  if (!action || typeof action !== "object") return cur;
+  if (action.type === "preset") {
+    if (!validPreset(action.preset)) return cur;               // invalid preset ignored
+    const share = clampShare(Number(action.share)) ?? cur.share;
+    return { preset: action.preset, share };
+  }
+  if (action.type === "toggle") return { preset: "custom", share: cur.share };
+  return cur;
+}
+
+/** The visible label next to the toolbar select: "★ Hard jumps · 4 %" or "★ custom". */
+export function goldenLabel(g) {
+  const s = normalizeGolden(g);
+  if (s.preset === "custom") return "★ custom";
+  if (!s.preset) return "★ –";
+  const label = PRESETS.find(p => p[0] === s.preset)?.[1] ?? s.preset;
+  return `★ ${label} · ${(s.share * 100).toFixed(0)}%`;
+}

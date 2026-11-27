@@ -48,24 +48,28 @@ class TimedWord:
     line_index: int
 
 
-def timed_words(song: Song, voice: int = 1) -> list[TimedWord]:
+def timed_words(song: Song, voice: int = 1, lang: str = "en") -> list[TimedWord]:
+    from ..lyrics import expand_numbers
+
     out = []
     for w in song.words(voice):
-        tok = norm_token(w.text)
+        tok = norm_token(expand_numbers(w.text, lang))  # "22" and "twenty-two" must match
         if not tok:
             continue
-        out.append(_timed(song, w, tok))
+        out.append(_timed(song, w, tok, lang))
     return out
 
 
-def _timed(song: Song, w: Word, tok: str) -> TimedWord:
+def _timed(song: Song, w: Word, tok: str, lang: str = "en") -> TimedWord:
+    from ..lyrics import expand_numbers
+
     syl = w.syllables
     return TimedWord(
         token=tok,
         start=song.beat_to_seconds(w.start),
         end=song.beat_to_seconds(w.end),
         syllable_starts=[song.beat_to_seconds(n.start) for n in syl],
-        syllable_texts=[norm_token(n.text) for n in syl],
+        syllable_texts=[norm_token(expand_numbers(n.text, lang)) for n in syl],
         line_index=w.line_index,
     )
 
@@ -86,10 +90,11 @@ def match_words(ref: list[TimedWord], hyp: list[TimedWord], time_scale: float = 
         sm = SequenceMatcher(None, [w.token for w in ref], [w.token for w in hyp], autojunk=False)
         return [(b.a + k, b.b + k) for b in sm.get_matching_blocks() for k in range(b.size)]
     import math
-    score = [[0.0] * (m + 1) for _ in range(n + 1)]
-    back = [[0] * (m + 1) for _ in range(n + 1)]  # 0 diag, 1 up, 2 left
+    stride = m + 1
+    back = bytearray((n + 1) * stride)  # 0 diag, 1 up, 2 left - one uint8 per cell
+    prev = [0.0] * stride
     for i in range(1, n + 1):
-        ri, row, prev = ref[i - 1], score[i], score[i - 1]
+        ri, row, base = ref[i - 1], [0.0] * stride, i * stride
         for j in range(1, m + 1):
             best, how = prev[j], 1
             if row[j - 1] > best:
@@ -99,10 +104,12 @@ def match_words(ref: list[TimedWord], hyp: list[TimedWord], time_scale: float = 
                 v = prev[j - 1] + 1.0 + 0.5 * math.exp(-abs(hj.start - ri.start) / time_scale)
                 if v > best:
                     best, how = v, 0
-            row[j], back[i][j] = best, how
+            row[j] = best
+            back[base + j] = how
+        prev = row
     pairs, i, j = [], n, m
     while i and j:
-        how = back[i][j]
+        how = back[i * stride + j]
         if how == 0:
             pairs.append((i - 1, j - 1))
             i, j = i - 1, j - 1
@@ -171,7 +178,11 @@ def _grid_metrics(ref: Song, hyp: Song, voice: int) -> dict[str, float | None]:
 
 
 def compare(ref: Song, hyp: Song, voice: int = 1) -> dict[str, float | None]:
-    rw, hw = timed_words(ref, voice), timed_words(hyp, voice)
+    from ..lyrics import language_code
+
+    # expand numeral tokens on both sides so "22" == "twenty two" (lang from the song metadata)
+    lang = language_code(ref.get("LANGUAGE")) if ref.get("LANGUAGE") else "en"
+    rw, hw = timed_words(ref, voice, lang), timed_words(hyp, voice, lang)
     if "greek" in (ref.get("LANGUAGE") or "").lower():
         # Greeklish writes chi as h, ch or x: compare on one spelling
         for w in rw + hw:

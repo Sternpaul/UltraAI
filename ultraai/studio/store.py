@@ -35,6 +35,12 @@ AUDIO_EXT = {".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wav", ".aac", ".webm"}
 STATES = ("downloading", "queued", "processing", "needs_lyrics", "needs_review", "reviewed",
           "imported", "error")
 
+# Golden-notes presets the editor offers (mirror of PRESETS ids in web/golden.js);
+# "custom" means the user toggled individual notes by hand, "" = nothing chosen yet.
+GOLDEN_PRESETS = ("hard", "held", "high", "mix", "none")
+GOLDEN_CUSTOM = "custom"
+GOLDEN_SHARE_MAX = 0.5
+
 
 class VersionConflict(Exception):
     """PUT /doc with a stale base_version: the doc changed on the server in between."""
@@ -67,13 +73,30 @@ class SongState:
     progress: dict = field(default_factory=dict)  # live processing steps / ETA from the processor
     video: str = ""                     # file name of the music video (USDX #VIDEO), if any
     cover: str = ""                     # cover image (USDX #COVER), if any
+    video_url: str = ""                 # explicit video link (USDB v=); "" = derive from .ytid sidecar / #VIDEOURL
+    cover_url: str = ""                 # explicit cover link (USDB co=); "" = the YouTube thumbnail
     doc_version: int = 0                # bumped on every doc save and reprocess (optimistic locking)
     warning: str = ""                   # song-level check from processing ("Lyrics may not match the singing")
+    golden_preset: str = ""             # golden-notes preset id, "custom" (hand-edited) or "" (none chosen)
+    golden_share: float = 0.04          # fraction of notes that are golden
 
     @classmethod
     def from_dict(cls, d: dict) -> "SongState":
         known = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
         return cls(**known)
+
+
+def save_user_lyrics(lib: Library, sid: str, text: str) -> Path:
+    """User-pasted lyrics -> ``.studio/lyrics.txt`` (stripped + trailing newline, atomic).
+
+    The queued job reads this file into the job spec (processors.Processor.job_spec) and
+    uses it instead of the online lookup.  Also stamps the song state's lyrics_source
+    ('user', or '' when the lyrics are cleared) so the card can show where they came from
+    before the run reports back."""
+    path = lib.studio_dir(sid) / "lyrics.txt"
+    atomic_write(path, (text.strip() + "\n").encode("utf-8"))
+    lib.update(sid, lyrics_source="user" if text.strip() else "")
+    return path
 
 
 class Library:
@@ -82,28 +105,78 @@ class Library:
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._index: dict[str, Path] = {}
+        # scan cache: folder name -> (folder mtime_ns, song.json (mtime_ns, size) | None, sid, sid_from_json)
+        self._scan_cache: dict[str, tuple] = {}
+        self._root_mtime: int | None = None
+        self.scan_reads = 0  # how often scan() read a song.json content (diagnostics/tests)
+        self._rev = 0  # bumped on every mutation; GET /api/events polls it to push `songs` events
+
+    @property
+    def rev(self) -> int:
+        """Library version counter: any add/remove/update (or a scan that finds a change)."""
+        with self._lock:
+            return self._rev
 
     # ---- lookup ------------------------------------------------------------
     def scan(self) -> dict[str, Path]:
-        """id -> folder.  Folders without Studio state get a stable id from their name."""
+        """id -> folder.  Folders without Studio state get a stable id from their name.
+
+        Cached: on a warm scan only iterdir + stat per folder happen; a song.json is
+        re-read only when its (mtime, size) changed.  The cache is rebuilt in full on
+        the first call and whenever the library root mtime changed (folders added,
+        removed or renamed).
+        """
         with self._lock:
+            try:
+                root_mtime = self.root.stat().st_mtime_ns
+            except OSError:
+                root_mtime = None
+            if not self._index or self._root_mtime != root_mtime:
+                self._scan_cache = {}
+                self._root_mtime = root_mtime
             idx = {}
             for folder in sorted(p for p in self.root.iterdir() if p.is_dir() and not p.name.startswith(".")):
-                st_file = folder / ".studio" / "song.json"
-                sid = None
-                if st_file.exists():
-                    try:
-                        sid = json.loads(st_file.read_text(encoding="utf-8"))["id"]
-                    except (ValueError, KeyError, TypeError, OSError) as exc:
-                        log.warning("song state %s was corrupt (%s); quarantined", st_file, exc)
-                        quarantine(st_file)
-                        sid = None
-                if sid is None and any(folder.glob("*.txt")):
-                    sid = "x" + uuid.uuid5(uuid.NAMESPACE_URL, folder.name).hex[:11]
+                sid = self._scan_folder(folder)
                 if sid is not None:
                     idx[sid] = folder
+            if idx != self._index:  # folders appeared / disappeared on disk
+                self._rev += 1
             self._index = idx
             return dict(idx)
+
+    def _scan_folder(self, folder: Path) -> str | None:
+        """sid for one folder; reuses the cached entry (no file content read) when neither
+        the folder mtime nor the song.json (mtime, size) changed."""
+        prev = self._scan_cache.get(folder.name)
+        try:
+            fm = folder.stat().st_mtime_ns
+        except OSError:
+            fm = None
+        st_file = folder / ".studio" / "song.json"
+        try:
+            st = st_file.stat()
+            sj: tuple | None = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            sj = None
+        if prev is not None and prev[0] == fm and prev[1] == sj:
+            return prev[2]
+        sid, from_json = None, False
+        if sj is not None and (prev is None or prev[1] != sj):
+            self.scan_reads += 1  # the only place scan() reads file content
+            try:
+                sid = json.loads(st_file.read_bytes())["id"]  # bytes: read_text is ~60x slower here
+                from_json = True
+            except (ValueError, KeyError, TypeError, OSError) as exc:
+                log.warning("song state %s was corrupt (%s); quarantined", st_file, exc)
+                quarantine(st_file)
+                sid = None
+        elif prev is not None and prev[1] == sj and prev[3]:
+            sid = prev[2]  # song.json unchanged: keep its id without re-reading
+        if sid is None and (prev is None or prev[0] != fm or prev[1] != sj):
+            if any(folder.glob("*.txt")):
+                sid = "x" + uuid.uuid5(uuid.NAMESPACE_URL, folder.name).hex[:11]
+        self._scan_cache[folder.name] = (fm, sj, sid, from_json)
+        return sid
 
     def folder(self, sid: str) -> Path:
         with self._lock:
@@ -118,7 +191,7 @@ class Library:
         f = folder / ".studio" / "song.json"
         if f.exists():
             try:
-                return SongState.from_dict(json.loads(f.read_text(encoding="utf-8")))
+                return SongState.from_dict(json.loads(f.read_bytes()))
             except (ValueError, TypeError, KeyError, OSError) as exc:
                 log.warning("song state %s was corrupt (%s); quarantined, using defaults", f, exc)
                 quarantine(f)
@@ -144,6 +217,7 @@ class Library:
             tmp = folder / ".studio" / "song.json.tmp"
             tmp.write_text(json.dumps(asdict(st), ensure_ascii=False, indent=1), encoding="utf-8")
             os.replace(tmp, folder / ".studio" / "song.json")
+            self._rev += 1  # every state write is a library change (SSE `songs` event)
 
     def update(self, sid: str, **kw) -> SongState:
         with self._lock:
@@ -280,6 +354,7 @@ class Library:
             trash.mkdir(exist_ok=True)
             shutil.move(str(folder), trash / f"{folder.name}-{int(time.time())}")
             self._index.pop(sid, None)
+            self._rev += 1
 
     # ---- versions ------------------------------------------------------------------
     def save_version(self, sid: str, txt_text: str, what: str) -> Path:
@@ -307,8 +382,44 @@ class Library:
             return st
 
     def versions(self, sid: str) -> list[dict]:
+        """Every saved version, oldest first: [{name, mtime, size, what}]."""
         d = self.studio_dir(sid) / "versions"
-        return [{"name": p.name, "time": p.stat().st_mtime} for p in sorted(d.glob("*.txt"))] if d.exists() else []
+        out = []
+        if d.exists():
+            for p in sorted(d.glob("*.txt")):
+                m = re.match(r"^[0-9]+-(.+)$", p.name)
+                st = p.stat()
+                out.append({"name": p.name, "mtime": st.st_mtime, "size": st.st_size,
+                            "what": m.group(1)[:-len(".txt")] if m else ""})
+        return out
+
+    VERSION_NAME = re.compile(r"^[0-9]+-[A-Za-z0-9_.-]+$")
+
+    def version_file(self, sid: str, name: str) -> Path:
+        """The version file for ``name`` — validated against VERSION_NAME and confined to
+        the song's versions dir (no traversal); ValueError on a bad name, KeyError if absent."""
+        if not self.VERSION_NAME.match(name):
+            raise ValueError(f"bad version name {name!r}")
+        d = (self.folder(sid) / ".studio" / "versions").resolve()
+        p = (d / name).resolve()
+        if p.parent != d or not p.is_file():
+            raise KeyError(name)
+        return p
+
+    def restore_version(self, sid: str, name: str) -> dict:
+        """Copy version ``name`` over the current txt (atomically), after saving the current
+        txt as a new 'pre-restore' version; bumps doc_version so open editors get a 409."""
+        with self._lock:
+            v = self.version_file(sid, name)  # ValueError -> 400, KeyError -> 404
+            txt = self.txt_path(sid)
+            if txt is None:
+                raise KeyError("the song has no txt yet")
+            backup = self.save_version(sid, txt.read_text(encoding="utf-8"), "pre-restore")
+            atomic_write(txt, v.read_bytes())
+            st = self.state(sid)
+            st.doc_version += 1
+            self.save_state(st)
+            return {"ok": True, "restored": name, "backup": backup.name, "doc_version": st.doc_version}
 
 
 def youtube_id(url: str) -> str | None:
@@ -322,19 +433,57 @@ def youtube_cover_url(yt: str) -> str:
     return f"https://img.youtube.com/vi/{yt}/hqdefault.jpg"
 
 
-def usdb_text(txt_text: str, source: str) -> str:
+def song_ytid(lib: Library, st: SongState) -> str | None:
+    """The YouTube id of a song: from the add-link, else the ``.ytid`` sidecar next to the
+    audio, else ``#VIDEOURL``/``#AUDIOURL`` in the txt."""
+    if yt := youtube_id(st.source):
+        return yt
+    if st.audio:
+        side = lib.folder(st.id) / f"{Path(st.audio).stem}.ytid"
+        try:
+            v = side.read_text(encoding="utf-8").strip()
+        except OSError:
+            v = ""
+        if re.fullmatch(r"[A-Za-z0-9_-]{11}", v):
+            return v
+    txt = lib.txt_path(st.id)
+    if txt is not None:
+        from ..ultrastar.reader import read
+
+        try:
+            song = read(txt)
+        except Exception:  # noqa: BLE001 - no link derivable from a broken txt
+            return None
+        return youtube_id(song.get("VIDEOURL") or "") or youtube_id(song.get("AUDIOURL") or "")
+    return None
+
+
+def effective_links(lib: Library, st: SongState) -> tuple[str, str]:
+    """(video_link, cover_link) the song uses: the explicit overrides when set, else the
+    YouTube watch URL / thumbnail derived from the song's video id."""
+    yt = song_ytid(lib, st)
+    video = st.video_url or (f"https://www.youtube.com/watch?v={yt}" if yt else "")
+    cover = st.cover_url or (youtube_cover_url(yt) if yt else "")
+    return video, cover
+
+
+def usdb_text(txt_text: str, source: str, video_url: str = "", cover_url: str = "",
+              ytid: str = "") -> str:
     """The song as USDB expects it. USDB hosts only the txt, so every media file must be a
     link, and the links live inside #VIDEO as USDB Syncer meta tags — a comma-separated
     list of key=value pairs: v=<YouTube id> for audio/video, co=<cover url> for the cover
     (the thumbnail of that same video, unless the txt already links one), plus whatever
     the txt already had (preview=…, medley=…, …). USDB Syncer rewrites the downloaded txt
-    to local file names; local-only lines are left out here."""
+    to local file names; local-only lines are left out here.  ``video_url``/``cover_url`` are
+    the explicit overrides from the song info dialog (empty = derive as before)."""
     from ..ultrastar.reader import parse
     from ..ultrastar.writer import dumps
 
     song = parse(txt_text)
-    yt = youtube_id(source) or youtube_id(song.get("VIDEOURL") or "") or youtube_id(song.get("AUDIOURL") or "")
-    cover = song.get("COVERURL") or (youtube_cover_url(yt) if yt else None)
+    yt = (youtube_id(video_url)
+          or (ytid if re.fullmatch(r"[A-Za-z0-9_-]{11}", ytid or "") else None)
+          or youtube_id(source) or youtube_id(song.get("VIDEOURL") or "") or youtube_id(song.get("AUDIOURL") or ""))
+    cover = cover_url or song.get("COVERURL") or (youtube_cover_url(yt) if yt else None)
     old_video = song.get("VIDEO") or ""
     for k in ("VIDEO", "VIDEOGAP", "AUDIOURL", "VIDEOURL", "COVERURL", "BACKGROUNDURL"):
         song.set(k, None)
@@ -351,9 +500,10 @@ def usdb_text(txt_text: str, source: str) -> str:
         params["v"] = yt
         if "v" not in order:
             order.insert(0, "v")
-    if cover and "co" not in params:
+    if cover and (cover_url or "co" not in params):  # an explicit cover override wins over the txt's co=
         params["co"] = cover
-        order.append("co")
+        if "co" not in order:
+            order.append("co")
     if order:
         song.set("VIDEO", ",".join(f"{k}={params[k]}" for k in order))
     if cover:

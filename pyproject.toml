@@ -8,6 +8,7 @@ dependencies = [
   "fastapi", "uvicorn", "python-multipart",
   "mutagen",
   "yt-dlp",
+  "num2words",                  # numerals -> spoken words in lyrics (lyrics.py)
   "pywebview; sys_platform == 'win32' or sys_platform == 'darwin'",
 ]
 

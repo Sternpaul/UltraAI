@@ -60,6 +60,7 @@ OPTS: list[Opt] = [
     Opt("previewstart", "ULTRAAI_PREVIEWSTART", "1", "write #PREVIEWSTART (seconds) at the first chorus start: first note of the largest repeated line group"),
     Opt("export_lrc", "ULTRAAI_EXPORT_LRC", "0", "write a word-synced .lrc next to the song .txt (byproducts.py)"),
     Opt("export_ass", "ULTRAAI_EXPORT_ASS", "0", "write a karaoke .ass next to the song .txt (byproducts.py)"),
+    Opt("expand_numbers", "ULTRAAI_EXPAND_NUMBERS", "1", "rewrite numeral tokens in the lyrics as spoken words (22 -> twenty-two) for processing and the output .txt; 0 disables"),
     Opt("repair", "ULTRAAI_REPAIR", "1", "override LRC timestamps the audio clearly contradicts"),
     Opt("repair_conf", "ULTRAAI_REPAIR_CONF", "0.15", "min alignment confidence to trust the audio over the LRC"),
     Opt("repair_shift", "ULTRAAI_REPAIR_SHIFT", "3.0", "seconds of disagreement that count as a wrong LRC timestamp"),
@@ -84,11 +85,17 @@ OPTS: list[Opt] = [
     Opt("cookies", "ULTRAAI_COOKIES", "", "path to a Netscape cookies.txt passed to yt-dlp via --cookies (YouTube 429 rate limits); the file is a secret: never logged, never committed"),
     Opt("yt_impersonate", "ULTRAAI_YT_IMPERSONATE", "chrome", "yt-dlp --impersonate target (e.g. chrome) for YouTube requests; lifts most 429 rate limits on subtitle downloads. Requires curl_cffi. '' disables"),
     Opt("yt_sleep_subs", "ULTRAAI_YT_SLEEP_SUBS", "60", "yt-dlp --sleep-subtitles seconds; YouTube restricts auto-subtitles for sessions younger than ~60 s. 0 disables"),
-    Opt("asr_prior", "ULTRAAI_ASR_PRIOR", "1.0", "Gaussian time-prior bonus (log-prob units) for aligned words near their Whisper-heard time; 0 disables"),
+    Opt("asr_prior", "ULTRAAI_ASR_PRIOR", "2.0", "Gaussian time-prior bonus (log-prob units) for aligned words near their Whisper-heard time; 0 disables"),
     Opt("asr_prior_sigma", "ULTRAAI_ASR_PRIOR_SIGMA", "0.3", "std-dev (s) of the Gaussian Whisper time prior in the anchored Viterbi"),
     Opt("background_units", "ULTRAAI_BACKGROUND_UNITS",
         "ultraai-bench.service ultraai-library.service ultraai-after-run.service",
         "systemd user units paused while a song job runs; read once at import"),
+
+    Opt("max_jobs", "ULTRAAI_MAX_JOBS", "1",
+        "max song jobs processed in parallel on this machine (worker.py: per-audio-hash lock files + slot semaphore); "
+        "1 = one job at a time, as before. Each job is a process with the full model stack in memory, "
+        "so N needs roughly N x the RAM/VRAM of one job; on a cold cache two jobs can also download the same "
+        "model into the shared MODEL_DIR at once — run one job first to warm it"),
 ]
 
 _BY_KEY = {o.key: o for o in OPTS}

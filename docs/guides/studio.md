@@ -27,6 +27,9 @@ worker runs locally on your PC.
 2. **Add songs**: YouTube link, *Add files…*, or drag & drop audio. The YouTube id is kept
    (`#AUDIOURL`/`#VIDEOURL`, `.ytid` sidecar), so YouTube captions can be used as a *last
    resort* lyrics source — such songs show a warning badge ("last resort — often inaccurate").
+   You can also paste your own lyrics when adding a song (the *Lyrics* field in the add bar /
+   add-files dialog, or the *Lyrics* button on a queued song) — they are used instead of the
+   online lookup.
 3. Processing runs on the server (~10 min per new song on CPU; much faster with a CUDA GPU).
    The song list updates live (server-sent events); click *steps* for per-stage progress and
    ETA. Multiple songs can process in parallel on the server (`ULTRAAI_MAX_JOBS`, default 1).
@@ -53,6 +56,9 @@ worker runs locally on your PC.
 
 `Artist - Title/Artist - Title.txt` (USDX), the audio (`.m4a`/`.ogg`), optional `[VD].mp4` /
 `[CO].jpg`, and `.studio/` with the app state, separated vocals, lyrics, and version history.
+The ✎ button on a song card also edits the **video link** (`v=`) and **cover link** (`co=`) used
+for USDB (empty = the song's own YouTube link / thumbnail); if a `[VD]` video is already
+downloaded, the dialog warns that it will not match a changed video link.
 Point UltraStar Deluxe at the library root to sing. *USDB* in the editor shows the txt ready
 for usdb.animux.de.
 

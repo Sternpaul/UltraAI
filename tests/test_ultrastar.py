@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ultraai.ultrastar.model import Note
+from ultraai.ultrastar.model import Line, Note, Song
 from ultraai.ultrastar.reader import read, read_bytes
 from ultraai.ultrastar.validator import validate
 from ultraai.ultrastar.writer import dumps, upgrade_to_v1
@@ -63,6 +63,59 @@ def test_validator_flags_problems():
     codes = {(i.level, i.code) for i in validate(s)}
     assert ("error", "version") in codes and ("error", "header") in codes
     assert ("warning", "overlap") in codes and ("warning", "break") in codes
+
+
+def _body_song(body: bytes, bpm=300, gap=0):
+    head = f"#TITLE:T\n#ARTIST:A\n#MP3:a.mp3\n#BPM:{bpm}\n#GAP:{gap}\n".encode()
+    return read_bytes(head + body)
+
+
+def test_validator_overlap_message_and_beat():
+    # BPM 300, GAP 0 -> 0.05 s per beat: beat 2 = 0:00.1, beat 4 = 0:00.2 (song time)
+    s = _body_song(b": 0 4 0 a\n: 2 4 0 b\n- 8\nE\n")
+    (i,) = [x for x in validate(s) if x.code == "overlap"]
+    assert i.level == "warning" and i.voice == 1 and i.line == 0 and i.beat == 2
+    assert i.message == ("note at 0:00.1 overlaps the previous note (ends 0:00.2)"
+                         " - shorten the previous note or move this one later")
+    assert "beat" not in i.message and "line" not in i.message  # location is song time
+    assert "[P" not in str(i)  # no [P1 line N] suffix on issues that carry a beat
+
+
+def test_validator_order_message_and_beat():
+    s = _body_song(b": 4 4 0 a\n: 0 4 0 b\n- 12\nE\n")
+    (i,) = [x for x in validate(s) if x.code == "order"]
+    assert i.level == "error" and i.beat == 0
+    assert "note at 0:00.0 starts before the previous note (0:00.2)" in i.message
+    assert "swap" in i.message
+
+
+def test_validator_zero_length_message_and_beat():
+    s = _body_song(b": 6 0 0 a\n- 10\nE\n")
+    (i,) = [x for x in validate(s) if x.code == "note"]
+    assert i.level == "warning" and i.beat == 6
+    assert i.message == "zero-length note at 0:00.3 - give it a length or delete it"
+
+
+def test_validator_message_falls_back_to_beats_without_tempo():
+    s = Song(headers=[("TITLE", "T"), ("ARTIST", "A"), ("MP3", "a.mp3")])  # no #BPM -> spb unknown
+    s.voices[1] = [Line([Note(":", 6, 0, 0, "a")], None)]
+    (i,) = [x for x in validate(s) if x.code == "note"]
+    assert i.beat == 6 and i.message == "zero-length note at beat 6 - give it a length or delete it"
+
+
+def test_validator_break_messages_and_beat():
+    # break inside the line (beat 4 = 0:00.2, line ends at beat 8 = 0:00.4)
+    s = _body_song(b": 0 8 0 a\n- 4\n: 10 4 0 b\nE\n")
+    (i,) = [x for x in validate(s) if x.code == "break" and x.level == "warning"]
+    assert i.beat == 4 and i.line == 0
+    assert i.message == ("break at 0:00.2 is inside the line (the line ends at 0:00.4)"
+                         " - move the break after the line ends")
+    # break missing after the first line (only constructible programmatically, e.g. via the editor)
+    s2 = Song(headers=[("TITLE", "T"), ("ARTIST", "A"), ("MP3", "a.mp3"), ("BPM", "300"), ("GAP", "0")])
+    s2.voices[1] = [Line([Note(":", 0, 4, 0, "a")], None), Line([Note(":", 8, 4, 0, "b")], None)]
+    (i2,) = [x for x in validate(s2) if x.code == "break"]
+    assert i2.beat == 4  # jumps to the end of the line that lacks its break
+    assert i2.message == "line break missing after the line that ends at 0:00.2 - add a '-' break after the line"
 
 
 def _signature(song):

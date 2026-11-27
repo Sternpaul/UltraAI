@@ -24,17 +24,20 @@ class Issue:
     message: str
     voice: int | None = None
     line: int | None = None  # 0-based screen-line index
+    beat: float | None = None  # where to jump to in the editor (note start / break beat)
 
     def __str__(self) -> str:
+        # body issues carry their song-time location in the message (beat is set);
+        # the [P.. line ..] suffix is only kept for issues without a beat
         where = ""
-        if self.voice is not None:
+        if self.voice is not None and self.beat is None:
             where = f" [P{self.voice}" + (f" line {self.line + 1}" if self.line is not None else "") + "]"
         return f"{self.level.upper():7} {self.code}{where}: {self.message}"
 
 
 def validate(song: Song, folder: str | Path | None = None) -> list[Issue]:
     issues: list[Issue] = []
-    add = lambda level, code, msg, v=None, ln=None: issues.append(Issue(level, code, msg, v, ln))  # noqa: E731
+    add = lambda level, code, msg, v=None, ln=None, beat=None: issues.append(Issue(level, code, msg, v, ln, beat))  # noqa: E731
 
     for w in song.warnings:
         add("warning", "parse", w)
@@ -89,6 +92,15 @@ def validate(song: Song, folder: str | Path | None = None) -> list[Issue]:
         spb = song.seconds_per_beat
     except ValueError:
         spb = None
+
+    def loc(beat: float) -> str:
+        """Song-time location of a beat, e.g. '2:03.5' (mm:ss.s); beats only if the
+        tempo is unknown.  The editor shows the same time via fmtTime(beat_to_seconds)."""
+        if spb is None:
+            return f"beat {beat}"
+        sec = song.gap_ms / 1000.0 + beat * spb
+        return f"{int(sec // 60)}:{sec % 60:04.1f}"
+
     for v, lines in song.voices.items():
         prev_end = None
         prev_start = None
@@ -98,13 +110,19 @@ def validate(song: Song, folder: str | Path | None = None) -> list[Issue]:
         for li, line in enumerate(lines):
             for n in line.notes:
                 if n.length <= 0:
-                    add("warning", "note", f"zero-length note at beat {n.start}", v, li)
+                    add("warning", "note",
+                        f"zero-length note at {loc(n.start)} - give it a length or delete it", v, li, n.start)
                 if prev_start is not None and n.start < prev_start:
-                    add("error", "order", f"note at beat {n.start} starts before previous note", v, li)
+                    add("error", "order",
+                        f"note at {loc(n.start)} starts before the previous note ({loc(prev_start)})"
+                        f" - swap the two notes or fix their order", v, li, n.start)
                 elif prev_end is not None and n.start < prev_end:
-                    add("warning", "overlap", f"note at beat {n.start} overlaps previous (ends {prev_end})", v, li)
+                    add("warning", "overlap",
+                        f"note at {loc(n.start)} overlaps the previous note (ends {loc(prev_end)})"
+                        f" - shorten the previous note or move this one later", v, li, n.start)
                 if not n.text.strip():
-                    add("info", "text", f"note at beat {n.start} has no text", v, li)
+                    add("info", "text",
+                        f"note at {loc(n.start)} has no text - add a syllable or delete the note", v, li, n.start)
                 prev_start, prev_end = n.start, n.end
 
             text = line.text
@@ -117,13 +135,21 @@ def validate(song: Song, folder: str | Path | None = None) -> list[Issue]:
                 nxt = lines[li + 1]
                 b = line.break_beat
                 if b is None:
-                    add("warning", "break", "line break missing", v, li)
+                    add("warning", "break",
+                        f"line break missing after the line that ends at {loc(line.end)}"
+                        f" - add a '-' break after the line", v, li, line.end)
                 elif b < line.end:
-                    add("warning", "break", f"break at {b} lies inside the line (ends {line.end})", v, li)
+                    add("warning", "break",
+                        f"break at {loc(b)} is inside the line (the line ends at {loc(line.end)})"
+                        f" - move the break after the line ends", v, li, b)
                 elif b > nxt.start:
-                    add("warning", "break", f"break at {b} after next line starts ({nxt.start})", v, li)
+                    add("warning", "break",
+                        f"break at {loc(b)} is after the next line starts ({loc(nxt.start)})"
+                        f" - move the break earlier", v, li, b)
                 elif b == nxt.start:
-                    add("info", "break", f"break at {b} equals next note start", v, li)
+                    add("info", "break",
+                        f"break at {loc(b)} is exactly at the next line's first note - move it a little earlier to be safe",
+                        v, li, b)
     return issues
 
 

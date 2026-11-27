@@ -1,5 +1,6 @@
 // Router, library board, settings, imports.
 import { api, h, lyricsLabel, toast } from "./api.js";
+import { startEvents, onSongs, eventsConnected } from "./events.js";
 
 const view = document.getElementById("view");
 const crumbs = document.getElementById("crumbs");
@@ -38,6 +39,8 @@ function library() {
   let query = "";
   const list = h("div", { class: "songs", role: "list" });
   const urlIn = h("input", { type: "url", placeholder: "Paste a YouTube link…", "aria-label": "YouTube link" });
+  const lyricsIn = h("textarea", { rows: 6, spellcheck: "false", "aria-label": "Lyrics (optional)",
+    placeholder: "Paste the lyrics, one sung line per line. Empty = looked up online." });
   const fileIn = h("input", { type: "file", multiple: true, accept: "audio/*,video/*", hidden: true });
   const filterBtns = FILTERS.map(([k, label]) =>
     h("button", { type: "button", class: "small", "aria-pressed": String(k === filter),
@@ -51,11 +54,13 @@ function library() {
     e.preventDefault();
     const url = urlIn.value.trim();
     if (!url) return;
+    const lyrics = lyricsIn.value;
     const options = await processDialog("Add song – processing options");
     if (!options) return;
     try {
-      await api("/api/songs/url", { method: "POST", json: { url, options } });
+      await api("/api/songs/url", { method: "POST", json: { url, options, lyrics } });
       urlIn.value = "";
+      lyricsIn.value = "";
       toast("Downloading…");
       load();
     } catch (err) { toast(`Could not add: ${err.message}`); }
@@ -66,7 +71,10 @@ function library() {
     h("form", { class: "addbar", onsubmit: addUrl },
       urlIn, h("button", { class: "primary" }, "Add link"),
       h("button", { type: "button", onclick: () => fileIn.click() }, "Add files…"), fileIn,
-      h("span", { class: "muted" }, "or drop audio files anywhere")),
+      h("span", { class: "muted" }, "or drop audio files anywhere"),
+      h("details", { class: "addlyrics" },
+        h("summary", {}, "Lyrics (optional — used instead of online lookup)"),
+        lyricsIn)),
     h("div", { class: "filters" }, filterBtns, counts, search),
     list));
 
@@ -92,12 +100,15 @@ function library() {
     if (s.state === "needs_lyrics") acts.push(h("button", { type: "button", class: "primary", onclick: () => lyricsDialog(s.id, load) }, "Add lyrics"));
     if (["error", "needs_review", "reviewed", "needs_lyrics"].includes(s.state))
       acts.push(h("button", { type: "button", class: "ghost small", title: "Process again", onclick: () => reprocess(s) }, "↻"));
-    if (["needs_review", "reviewed", "error"].includes(s.state))
-      acts.push(h("button", { type: "button", class: "ghost small", title: "Replace the lyrics", onclick: () => lyricsDialog(s.id, load) }, "Lyrics"));
+    if (["queued", "downloading", "needs_review", "reviewed", "error"].includes(s.state))
+      acts.push(h("button", { type: "button", class: "ghost small", title: "Set or replace the lyrics (used on the next run)",
+        onclick: () => lyricsDialog(s.id, load) }, "Lyrics"));
+    acts.push(h("button", { type: "button", class: "ghost small", title: "Saved versions of the song text", "aria-label": `Versions of ${s.title}`,
+      onclick: () => versionsDialog(s, load) }, "🕘"));
     if (/^https?:/.test(s.source || "") && (!s.video || !s.cover) && s.state !== "downloading")
       acts.push(h("button", { type: "button", class: "ghost small", title: "Download the music video and cover (Settings decide the quality)",
         onclick: () => getExtras(s) }, "Video"));
-    acts.push(h("button", { type: "button", class: "ghost small", title: "Edit artist / title / language", "aria-label": `Edit ${s.title}`,
+    acts.push(h("button", { type: "button", class: "ghost small", title: "Edit artist / title / language / video & cover links", "aria-label": `Edit ${s.title}`,
       onclick: () => infoDialog(s, load) }, "✎"));
     acts.push(h("button", { type: "button", class: "ghost small", title: "Remove from library", "aria-label": `Remove ${s.title}`, onclick: () => remove(s) }, "✕"));
     const sub = s.stage ? s.stage : lyricsLabel(s.lyrics_info, s.lyrics_source);
@@ -145,9 +156,12 @@ function library() {
     try { songs = await api("/api/songs"); render(); refreshSteps(songs); } catch (e) { toast(`Backend not reachable: ${e.message}`); }
   }
   load();
-  const timer = setInterval(() => { if (!document.hidden) load(); }, 3000);
+  // live updates over the SSE stream (replaces the old 3 s poll); while the stream is
+  // down, fall back to polling every 30 s
+  const offSongs = onSongs(list => { songs = list; render(); refreshSteps(songs); });
+  const fallback = setInterval(() => { if (!eventsConnected() && !document.hidden) load(); }, 30000);
   libraryReload = load;
-  return () => { clearInterval(timer); libraryReload = null; };
+  return () => { offSongs(); clearInterval(fallback); libraryReload = null; };
 }
 let libraryReload = null;
 
@@ -160,7 +174,71 @@ function fmtDur(sec) {
 
 // ------------------------------------------------------------------ processing steps dialog
 let stepsFor = null;
+let stepsLog = null;  // live worker-log poller of the open steps dialog: {id, pre, sum, bytes, lines, timer, live, busy}
 const STEP_ICON = { done: "✓", running: "●", pending: "○", skipped: "–", error: "✕" };
+
+// Cap of lines kept in the live <pre>: a long job must not grow the DOM without bound.
+// 2000 lines ~ tens of KB of text, plenty for a session glimpse; anything older is dropped
+// from the view only (the full log stays in <song>/.studio/worker.log).
+const MAX_LOG_LINES = 2000;
+
+function stopStepsLog() {
+  if (stepsLog?.timer) clearInterval(stepsLog.timer);
+  if (stepsLog) stepsLog.sum.textContent = "Server log of this song";
+  stepsLog = null;
+}
+
+// Append text to the live <pre> without rebuilding its whole textContent every poll, and
+// trim the oldest lines in batches of MAX_LOG_LINES so the trim itself stays cheap.
+function appendWorkerLog(sl, text) {
+  sl.pre.appendChild(document.createTextNode(text));
+  sl.lines += (text.match(/\n/g) || []).length;
+  if (sl.lines > MAX_LOG_LINES * 2) {
+    const lines = sl.pre.textContent.split("\n");
+    sl.pre.textContent = lines.slice(-MAX_LOG_LINES).join("\n");
+    sl.lines = Math.min(sl.lines, MAX_LOG_LINES);
+  }
+  sl.pre.scrollTop = sl.pre.scrollHeight;
+}
+
+// One worker-log fetch; full=true reloads from byte 0, otherwise appends only the bytes past sl.bytes.
+async function fetchWorkerLog(sl, full) {
+  const r = await fetch(`/api/songs/${sl.id}/worker-log${full ? "" : `?after=${sl.bytes}`}`);
+  const text = await r.text();
+  if (!r.ok) throw new Error(text || `${r.status}`);
+  const total = Number(r.headers.get("x-total-size"));
+  if (full) {
+    sl.pre.textContent = text || "No server log yet (it arrives with the results).";
+    sl.lines = (sl.pre.textContent.match(/\n/g) || []).length;
+    sl.pre.scrollTop = sl.pre.scrollHeight;
+  } else if (text) appendWorkerLog(sl, text);
+  sl.bytes = Number.isFinite(total) ? total : sl.bytes + new TextEncoder().encode(text).length;
+}
+
+// While the song is processing/downloading the server log streams live: poll ?after=<bytes>
+// every 3 s and append; show "(live)".  When the job reaches a final state, grab the last
+// bytes once and stop (the server then serves the authoritative final copy).
+function setStepsLogLive(sl, live) {
+  if (!stepsLog || stepsLog.id !== sl.id) return;
+  // Unchanged flag: keep the existing poll timer — refreshSteps calls this every ~3 s and
+  // clearing/re-creating the interval each time would reset the poll before it ever fires.
+  if (live === sl.live) return;
+  const wasLive = sl.live;
+  sl.live = live;
+  sl.sum.textContent = live ? "Server log of this song (live)" : "Server log of this song";
+  if (sl.timer) { clearInterval(sl.timer); sl.timer = null; }
+  if (live) {
+    sl.timer = setInterval(async () => {
+      if (!stepsLog || stepsLog.id !== sl.id || stepsLog.busy) return;
+      stepsLog.busy = true;
+      try { await fetchWorkerLog(stepsLog, false); } catch { /* retried on the next tick */ }
+      finally { stepsLog.busy = false; }
+    }, 3000);
+  } else if (wasLive) {
+    fetchWorkerLog(sl, false).catch(() => {});
+  }
+}
+
 async function stepsDialog(id) {
   stepsFor = id;
   const dlg = document.getElementById("steps-dialog");
@@ -169,14 +247,19 @@ async function stepsDialog(id) {
   fillSteps(s);
   const det = document.getElementById("steps-log");
   det.open = false;
+  stopStepsLog();
   det.ontoggle = async () => {
-    if (!det.open) return;
+    if (!det.open) { stopStepsLog(); return; }
     const pre = det.querySelector("pre");
+    const sl = stepsLog = { id, pre, sum: det.querySelector("summary"), bytes: 0, lines: 0, timer: null, live: false, busy: false };
     pre.textContent = "Loading…";
-    try { pre.textContent = (await api(`/api/songs/${id}/worker-log`)) || "No server log yet (it arrives with the results)."; }
-    catch (e) { pre.textContent = e.message; }
+    try { await fetchWorkerLog(sl, true); }
+    catch (e) { pre.textContent = e.message; return; }
+    let live = false;
+    try { live = ["processing", "downloading"].includes((await api(`/api/songs/${id}`)).state); } catch { /* not live */ }
+    setStepsLogLive(sl, live);
   };
-  dlg.addEventListener("close", () => { stepsFor = null; }, { once: true });
+  dlg.addEventListener("close", () => { stepsFor = null; stopStepsLog(); }, { once: true });
   dlg.showModal();
 }
 function fillSteps(s) {
@@ -202,7 +285,10 @@ function fillSteps(s) {
 function refreshSteps(songs) {
   if (!stepsFor) return;
   const s = songs.find(x => x.id === stepsFor);
-  if (s) fillSteps(s);
+  if (s) {
+    fillSteps(s);
+    if (stepsLog) setStepsLogLive(stepsLog, ["processing", "downloading"].includes(s.state));
+  }
 }
 
 function sessionStorageGet(k) { try { return sessionStorage.getItem(`ultraai.${k}`); } catch { return null; } }
@@ -212,11 +298,15 @@ function sessionStorageSet(k, v) { try { sessionStorage.setItem(`ultraai.${k}`, 
 async function upload(files) {
   files = files.filter(f => f.type.startsWith("audio/") || f.type.startsWith("video/") || /\.(mp3|m4a|ogg|opus|flac|wav|aac|webm)$/i.test(f.name));
   if (!files.length) return toast("No audio files in the selection");
-  const options = await processDialog(`Add ${files.length} song${files.length > 1 ? "s" : ""} – processing options`);
+  const lyrics = await addFilesDialog(files.length);
+  if (lyrics === null) return;
+  const options = await processDialog(`Add ${files.length} song${files.length > 1 ? "s" : ""} – processing options`, null,
+    files.length > 1 && lyrics.trim() ? `The same lyrics will be added to all ${files.length} songs.` : "");
   if (!options) return;
   const form = new FormData();
   for (const f of files) form.append("files", f);
   form.append("options", JSON.stringify(options));
+  if (lyrics.trim()) form.append("lyrics", lyrics);
   toast(`Uploading ${files.length} file${files.length > 1 ? "s" : ""}…`, 10000);
   try {
     await api("/api/songs/files", { method: "POST", form });
@@ -236,19 +326,37 @@ addEventListener("drop", e => {
   upload([...e.dataTransfer.files]);
 });
 
+// ------------------------------------------------------------------ add-files dialog (optional lyrics)
+/** Ask for lyrics before the processing options; resolves to the text, or null when cancelled. */
+function addFilesDialog(count) {
+  const dlg = document.getElementById("addfiles-dialog");
+  document.getElementById("addfiles-count").textContent =
+    `${count} file${count > 1 ? "s" : ""} selected. Lyrics apply to every file added here.`;
+  const ta = dlg.querySelector("textarea[name=lyrics]");
+  ta.value = "";
+  dlg.returnValue = "";
+  dlg.showModal();
+  return new Promise(resolve => dlg.addEventListener("close", () => {
+    resolve(dlg.returnValue === "add" ? ta.value : null);
+  }, { once: true }));
+}
+
 // ------------------------------------------------------------------ processing options
 let modelsCache = null;
 const SONG_S = 210;   // estimate for a 3½-minute song
 const FIXED_RATE = 0.5 + 0.35 + 0.12;   // analysis, listening, aligning (s per s of audio)
 
 /** Ask how to process: resolves to the options object, or null when cancelled. */
-export async function processDialog(title = "Processing options", start = null) {
+export async function processDialog(title = "Processing options", start = null, note = "") {
   const [models, settings] = await Promise.all([modelsCache ?? api("/api/models"), api("/api/settings")]);
   modelsCache = models;
   const o = { separation: "htdemucs", pitch: "swift", pitch_check: ["rmvpe"], sep_check: [], lead: "", notes: "singer",
     ...(settings.defaults || {}), ...(start || {}) };
   const dlg = document.getElementById("process-dialog"), box = document.getElementById("process-opts");
   document.getElementById("process-title").textContent = title;
+  const noteEl = document.getElementById("process-note");
+  noteEl.textContent = note;
+  noteEl.hidden = !note;
   const best = (g, kind) => {  // best measured timing / pitch in a group, for the ★ marks
     const b = models[g].filter(m => m[kind]);
     return { timing: Math.max(...b.map(m => m[kind].timing ?? 0)), pitch: Math.max(...b.map(m => m[kind].pitch)) };
@@ -281,11 +389,11 @@ export async function processDialog(title = "Processing options", start = null) 
         onchange: e => { o[key] = e.target.checked ? [...o[key], m.key] : o[key].filter(x => x !== m.key); refresh(); } }),
       h("span", {}, m.name, m.by ? h("span", { class: "muted" }, ` · ${m.by}`) : null,
         h("div", { class: "muted" }, costText(m.rate)))))));
-  const bs = models.bench_songs || [];
+  const bsN = models.bench_songs_n || 0;
   box.replaceChildren(
-    bs.length ? h("p", { class: "muted benchnote" }, `Scores: % of words timed within 250 ms and % of notes on the right pitch, ` +
-      `measured against hand-made songs. Models with a "N songs" score were tested on many songs, the others only on ` +
-      `${bs.length} (${bs.join(", ")}) - small differences there can be luck. ★ = best measured.`) : null,
+    bsN ? h("p", { class: "muted benchnote" }, `Scores: % of words timed within 250 ms and % of notes on the right pitch, ` +
+      `measured against hand-made songs. Models with an "N songs" score were tested on many songs, the others only on ` +
+      `${bsN} songs - small differences there can be luck. ★ = best measured.`) : null,
     radio("separation", "separation", "Vocal separation"),
     radio("pitch", "pitch", "Pitch model"),
     checks("separation", "sep_check", "separation", "Double-check with these separations"),
@@ -329,15 +437,36 @@ function costText(rate) {
 }
 
 // ------------------------------------------------------------------ song info dialog
+function ytidOf(u) {  // the 11-char video id of a YouTube link, else the trimmed link itself
+  const m = (u || "").match(/(?:v=|youtu\.be\/|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : (u || "").trim();
+}
+
 function infoDialog(s, after) {
   const dlg = document.getElementById("info-dialog"), f = dlg.querySelector("form");
   f.elements.artist.value = s.artist || ""; f.elements.title.value = s.title || ""; f.elements.language.value = s.language || "";
+  f.elements.video_url.value = s.video_link || ""; f.elements.cover_url.value = s.cover_link || "";
+  const warn = document.getElementById("info-media-warn");
+  // a downloaded [VD] file no longer matches when the video link points at another video
+  const videoChanged = () => {
+    const v = f.elements.video_url.value.trim();
+    return !!(s.video && v && ytidOf(v) !== ytidOf(s.video_link || ""));
+  };
+  const syncWarn = () => { warn.hidden = !videoChanged(); };
+  f.elements.video_url.addEventListener("input", syncWarn);
+  syncWarn();
   dlg.returnValue = "";
   dlg.showModal();
   dlg.addEventListener("close", async () => {
     if (dlg.returnValue !== "save") return;
+    const videoUrl = f.elements.video_url.value.trim(), coverUrl = f.elements.cover_url.value.trim();
+    if (videoChanged() && !confirm("A [VD] video file is already downloaded from the old link — it will not match the new video link. Re-download via the Video button to replace it.")) return;
     try {
-      await api(`/api/songs/${s.id}`, { method: "PATCH", json: { artist: f.elements.artist.value.trim(), title: f.elements.title.value.trim(), language: f.elements.language.value.trim() } });
+      await api(`/api/songs/${s.id}`, { method: "PATCH", json: {
+        artist: f.elements.artist.value.trim(), title: f.elements.title.value.trim(), language: f.elements.language.value.trim(),
+        // unchanged effective values stay derived (empty override) instead of being frozen
+        video_url: videoUrl === (s.video_link || "") ? "" : videoUrl,
+        cover_url: coverUrl === (s.cover_link || "") ? "" : coverUrl } });
       toast("Saved"); after?.();
     } catch (e) { toast(e.message); }
   }, { once: true });
@@ -360,6 +489,31 @@ export async function lyricsDialog(id, after) {
     try { await api(`/api/songs/${id}/lyrics`, { method: "POST", json: { text: ta.value } }); toast("Lyrics saved – processing again"); after?.(); }
     catch (e) { toast(e.message); }
   }, { once: true });
+}
+
+// ------------------------------------------------------------------ versions dialog
+async function versionsDialog(s, after) {
+  const dlg = document.getElementById("versions-dialog");
+  const list = document.getElementById("versions-list");
+  document.getElementById("versions-title").textContent = `Versions – ${s.artist} – ${s.title}`;
+  list.replaceChildren(h("li", { class: "muted" }, "Loading…"));
+  dlg.showModal();
+  let vs;
+  try { vs = await api(`/api/songs/${s.id}/versions`); }
+  catch (e) { list.replaceChildren(h("li", { class: "muted" }, e.message)); return; }
+  list.replaceChildren(...(vs.length ? vs.map(v => h("li", {},
+    h("span", {}, v.name, " ", h("span", { class: "meta" },
+      `${new Date(v.mtime * 1000).toLocaleString()} · ${(v.size / 1024).toFixed(1)} KiB${v.what ? ` · ${v.what}` : ""}`)),
+    h("button", { type: "button", class: "small", onclick: async () => {
+      if (!confirm(`Restore ${v.name}? The current text is saved as a new version first.`)) return;
+      try {
+        await api(`/api/songs/${s.id}/versions/${encodeURIComponent(v.name)}/restore`, { method: "POST" });
+        toast(`Restored ${v.name}`);
+        dlg.close();
+        after?.();
+      } catch (e) { toast(e.message); }
+    } }, "Restore"))
+  ) : [h("li", { class: "muted" }, "No versions yet — every save in the editor creates one.")]));
 }
 
 // ------------------------------------------------------------------ settings
@@ -404,4 +558,5 @@ sdlg.addEventListener("close", async () => {
   } catch (e) { toast(e.message); }
 });
 
+startEvents();  // the single SSE stream (songs + log events) for the whole app
 route();

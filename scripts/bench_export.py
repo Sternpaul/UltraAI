@@ -66,7 +66,7 @@ def main(out="out/bench", depth="out/bench-depth"):
     for r in rows:
         if "metrics" in r:
             by[r["config"]][r["song"]] = r
-    res = {"songs": songs, "separation": {}, "pitch": {}, "lead": {}}
+    res = {"songs_n": len(songs), "separation": {}, "pitch": {}, "lead": {}}  # never export song names
     for cfg, rs in by.items():
         if len(rs) < len(songs):
             continue
