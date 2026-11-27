@@ -411,6 +411,101 @@ def language_code(name: str | None) -> str:
     return "xx"
 
 
+# ---------------------------------------------------------------- numerals -> words
+# our ISO 639-1 code -> num2words converter name (num2words has no 'nb', only 'no')
+_N2W_LANG_ALIAS = {"nb": "no"}
+_CURRENCY = re.compile(r"[$€£¥₹]")
+_INT_CORE = re.compile(r"\d{1,3}(?:,\d{3})+|\d+")      # "1,000" or "22"
+_ORD_CORE = re.compile(r"(\d+)(?:st|nd|rd|th)", re.IGNORECASE)  # "21st"
+_DEC_CORE = re.compile(r"(\d+)\.(\d+)")                # "3.5"
+_n2w_cache: dict[tuple[int, str, str], str | None] = {}
+_n2w_dec_cache: dict[tuple[str, str], str | None] = {}
+
+
+def _n2w_lang(lang: str) -> str | None:
+    """num2words converter name for our ISO code, or None when num2words has no such language."""
+    try:
+        from num2words import CONVERTER_CLASSES
+    except ImportError:
+        return None
+    code = _N2W_LANG_ALIAS.get(lang, lang)
+    return code if code in CONVERTER_CLASSES else None
+
+
+def _n2w(n: int, nlang: str, to: str) -> str | None:
+    key = (n, nlang, to)
+    if key not in _n2w_cache:
+        try:
+            from num2words import num2words
+            _n2w_cache[key] = num2words(n, lang=nlang, to=to) or None
+        except Exception:  # unsupported lang or unsupported 'to' (e.g. no year reading)
+            _n2w_cache[key] = None
+    return _n2w_cache[key]
+
+
+def _n2w_dec(text: str, nlang: str) -> str | None:
+    """num2words reading of a plain dot-decimal, phrased per language (de: "drei Komma fünf")."""
+    key = (text, nlang)
+    if key not in _n2w_dec_cache:
+        try:
+            from num2words import num2words
+            _n2w_dec_cache[key] = num2words(float(text), lang=nlang) or None
+        except Exception:  # no decimal phrasing for this language
+            _n2w_dec_cache[key] = None
+    return _n2w_dec_cache[key]
+
+
+def _expand_token(tok: str, nlang: str) -> str:
+    """One whitespace-free token -> spoken words, or unchanged when it is not a plain numeral."""
+    if _CURRENCY.search(tok):  # "$5" stays "$5"
+        return tok
+    m = re.fullmatch(r"(\W*)(.*?)(\W*)", tok)
+    lead, core, tail = m.group(1), m.group(2), m.group(3)
+    out = None
+    if _DEC_CORE.fullmatch(core):
+        whole_s, frac = _DEC_CORE.fullmatch(core).groups()
+        if len(frac) == 3:
+            # a 3-digit "fraction" group is a dot-thousands separator (de: "10.000");
+            # only en reads it as a decimal, non-en keeps the digits unchanged
+            if nlang == "en":
+                whole = _n2w(int(whole_s), nlang, "cardinal")
+                if whole:
+                    out = whole + " point " + " ".join(
+                        _n2w(int(d), nlang, "cardinal") or d for d in frac)
+        else:
+            out = _n2w_dec(core, nlang)  # num2words phrases decimals per language
+    elif _ORD_CORE.fullmatch(core):
+        out = _n2w(int(_ORD_CORE.fullmatch(core).group(1)), nlang, "ordinal")
+    elif _INT_CORE.fullmatch(core):
+        v = int(core.replace(",", ""))
+        if 0 <= v <= 9999:
+            if "," not in core and 1000 <= v <= 2099:  # "1999" is usually sung as a year
+                out = _n2w(v, nlang, "year") or _n2w(v, nlang, "cardinal")
+            else:
+                out = _n2w(v, nlang, "cardinal")
+    return lead + out + tail if out else tok
+
+
+def expand_numbers(text: str, lang: str = "en") -> str:
+    """Rewrite numeral tokens as the words a singer sings them ("at 22" -> "at twenty-two").
+
+    Whisper hears the sung words, so lyrics used for processing (and the output .txt) must
+    carry words too, or a digit lands on one note while its sung syllables stay empty.
+    Per token: integers 0..9999 (optional thousand separators) -> cardinal words, plain
+    1000..2099 prefer the year reading ("1999" -> "nineteen ninety-nine") when num2words
+    supports it, ordinals ("1st") -> ordinal words, decimals via num2words per language
+    ("3.5" -> "three point five", "drei Komma fünf"); everything else ("$5", "COVID-19",
+    "3D", non-en dot-thousands "10.000") is unchanged.  ``lang`` is our ISO 639-1 code
+    (or a #LANGUAGE value); unsupported languages return the text unchanged.  Whitespace
+    and line structure are preserved exactly.
+    """
+    code = lang if re.fullmatch(r"[a-z]{2}", lang or "") else language_code(lang)
+    nlang = _n2w_lang(code)
+    if nlang is None:
+        return text
+    return re.sub(r"\S+", lambda m: _expand_token(m.group(0), nlang), text)
+
+
 def prepare(raw: str | list[str], language: str = "en") -> Lyrics:
     lines = clean_lines(raw)
     words: list[LyricWord] = []

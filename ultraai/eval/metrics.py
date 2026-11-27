@@ -48,24 +48,28 @@ class TimedWord:
     line_index: int
 
 
-def timed_words(song: Song, voice: int = 1) -> list[TimedWord]:
+def timed_words(song: Song, voice: int = 1, lang: str = "en") -> list[TimedWord]:
+    from ..lyrics import expand_numbers
+
     out = []
     for w in song.words(voice):
-        tok = norm_token(w.text)
+        tok = norm_token(expand_numbers(w.text, lang))  # "22" and "twenty-two" must match
         if not tok:
             continue
-        out.append(_timed(song, w, tok))
+        out.append(_timed(song, w, tok, lang))
     return out
 
 
-def _timed(song: Song, w: Word, tok: str) -> TimedWord:
+def _timed(song: Song, w: Word, tok: str, lang: str = "en") -> TimedWord:
+    from ..lyrics import expand_numbers
+
     syl = w.syllables
     return TimedWord(
         token=tok,
         start=song.beat_to_seconds(w.start),
         end=song.beat_to_seconds(w.end),
         syllable_starts=[song.beat_to_seconds(n.start) for n in syl],
-        syllable_texts=[norm_token(n.text) for n in syl],
+        syllable_texts=[norm_token(expand_numbers(n.text, lang)) for n in syl],
         line_index=w.line_index,
     )
 
@@ -174,7 +178,11 @@ def _grid_metrics(ref: Song, hyp: Song, voice: int) -> dict[str, float | None]:
 
 
 def compare(ref: Song, hyp: Song, voice: int = 1) -> dict[str, float | None]:
-    rw, hw = timed_words(ref, voice), timed_words(hyp, voice)
+    from ..lyrics import language_code
+
+    # expand numeral tokens on both sides so "22" == "twenty two" (lang from the song metadata)
+    lang = language_code(ref.get("LANGUAGE")) if ref.get("LANGUAGE") else "en"
+    rw, hw = timed_words(ref, voice, lang), timed_words(hyp, voice, lang)
     if "greek" in (ref.get("LANGUAGE") or "").lower():
         # Greeklish writes chi as h, ch or x: compare on one spelling
         for w in rw + hw:
