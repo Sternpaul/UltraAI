@@ -104,7 +104,7 @@ def test_match_respects_window_and_normalized_key():
 
 
 def test_config_defaults_registered():
-    assert config.get("asr_prior") == "1.0"
+    assert config.get("asr_prior") == "2.0"
     assert config.get_float("asr_prior_sigma") == pytest.approx(0.3)
     assert config.env_of("asr_prior") == "ULTRAAI_ASR_PRIOR"
     assert config.env_of("asr_prior_sigma") == "ULTRAAI_ASR_PRIOR_SIGMA"
