@@ -78,6 +78,34 @@ def lyrics_candidates(text: str, artist: str, title: str):
     return [LrcResult(artist, title, 0.0, lines, plain)]
 
 
+def lookup_lyrics(spec: dict, audio: Path, yt_meta: dict, pr: "Progress") -> tuple[list, str, list[float] | None]:
+    """Lyrics lookup order: user-supplied > LRCLIB > YouTube subtitles (last resort, pr/18).
+
+    A lookup *failure* (LRCLIB down, ffprobe missing, unreadable cache) must not kill the
+    job: log it and fall through to the next source.
+    """
+    from .batch import yt_sub_lyrics
+    from .lrc import fetch_candidates
+
+    artist, title = spec.get("artist", ""), spec.get("title", "")
+    if spec.get("lyrics"):
+        pr.skip("lyrics", "your lyrics")
+        return lyrics_candidates(spec["lyrics"], artist, title), "user", None
+    pr.start("lyrics")
+    line_times: list[float] | None = None
+    try:
+        cands, source = fetch_candidates(artist, title, audio), "LRCLIB"
+    except Exception as exc:  # noqa: BLE001 - any lookup error falls through to the subs
+        log.warning("lyrics lookup failed (%s: %s); trying YouTube subtitles", type(exc).__name__, exc)
+        cands, source = [], "LRCLIB"
+    if not cands:
+        yt = yt_sub_lyrics(audio, yt_meta)
+        if yt is not None:
+            cands, line_times = yt
+            source = "yt"
+    return cands, source, line_times
+
+
 # ------------------------------------------------------------------ progress
 STAGES = [("separate", "Separating vocals"), ("analyse", "Analysing the vocals (pitch, sounds)"),
           ("checks", "Double-checking with other models"),
@@ -310,7 +338,6 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
     from .batch import detect_language, greeklish
     from .byproducts import write_byproducts
     from .generate import analyse, generate_from_lines, generate_sung
-    from .lrc import fetch_candidates
     from .lyrics import language_code
     from .transcribe import transcribe
     from .ultrastar.writer import write
@@ -350,18 +377,7 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
     line_times: list[float] | None = None
     yt_meta = {"ARTIST": artist, "TITLE": title,
                "SOURCE": spec.get("source") or "", "YTID": spec.get("ytid") or ""}
-    if spec.get("lyrics"):
-        pr.skip("lyrics", "your lyrics")
-        cands, source = lyrics_candidates(spec["lyrics"], artist, title), "user"
-    else:
-        pr.start("lyrics")
-        cands, source = fetch_candidates(artist, title, audio), "LRCLIB"
-        if not cands:
-            from .batch import yt_sub_lyrics
-            yt = yt_sub_lyrics(audio, yt_meta)
-            if yt is not None:
-                cands, line_times = yt
-                source = "yt"
+    cands, source, line_times = lookup_lyrics(spec, audio, yt_meta, pr)
     log.info("lyrics: %s, %d version(s)", source, len(cands))
     cands = [c for c in cands if c.texts]
     lang_name = spec.get("language") or ""

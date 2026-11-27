@@ -8,8 +8,11 @@ timing are.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "large-v3-turbo"
 
@@ -57,9 +60,17 @@ def transcribe(vocals_16k: Path, language: str | None, model: str | None = None,
     if language in (None, "", "xx"):
         language = None
     cache = vocals_16k.with_name(f"{vocals_16k.stem}.asr-{model}-{language or 'auto'}.json")
+    raw = None
     if cache.exists():
-        raw = json.loads(cache.read_text(encoding="utf-8"))
-    else:
+        try:
+            raw = json.loads(cache.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raw = None
+        if raw is not None and not isinstance(raw, list):
+            raw = None
+        if raw is None:
+            log.warning("ignoring unreadable ASR cache %s; re-transcribing", cache.name)
+    if raw is None:
         import numpy as np
 
         if wave is None:
