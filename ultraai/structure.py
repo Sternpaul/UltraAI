@@ -59,24 +59,45 @@ class Structure:
         return self.score / max(1, self.asr_words)
 
 
-def _sim_matrix(a: list[str], b: list[str]) -> list[list[float]]:
-    cache: dict[tuple[str, str], float] = {}
-    out = []
-    for x in a:
-        row = []
-        for y in b:
-            k = (x, y)
-            if k not in cache:
-                if x == y:
-                    s = 1.0
-                elif not x or not y:
-                    s = 0.0
-                else:
-                    s = SequenceMatcher(None, x, y, autojunk=False).ratio()
-                cache[k] = s
-            row.append(cache[k])
-        out.append(row)
-    return out
+def _pair_sim(x: str, y: str) -> float:
+    if x == y:
+        return 1.0
+    if not x or not y:
+        return 0.0
+    return SequenceMatcher(None, x, y, autojunk=False).ratio()
+
+
+def _unique_index(words: list[str]) -> tuple[list[int], list[str]]:
+    """Map every word to the index of its first occurrence: returns (ids, unique words)."""
+    ids: dict[str, int] = {}
+    uniq: list[str] = []
+    out: list[int] = []
+    for w in words:
+        i = ids.get(w)
+        if i is None:
+            i = len(uniq)
+            ids[w] = i
+            uniq.append(w)
+        out.append(i)
+    return out, uniq
+
+
+def _sim_rows(a: list[str], b: list[str]) -> tuple[list[list[float]], list[int]]:
+    """Similarity of the ``a`` words to every ``b`` word: one row over ``b`` per *unique*
+    ``a`` word, plus each ``a`` word's unique id.  ``SequenceMatcher`` runs once per unique
+    word pair instead of once per matrix cell (songs repeat words), and the expanded rows
+    share the cached floats."""
+    b_ids, ub = _unique_index(b)
+    a_ids, ua = _unique_index(a)
+    usim = [[_pair_sim(x, y) for y in ub] for x in ua]
+    rows = [[ur[bi] for bi in b_ids] for ur in usim]
+    return rows, a_ids
+
+
+# backpointer kinds: one uint8 per (asr word, lyric word) DP cell; the source cell follows
+# from the kind (ins -> same p, match/del -> p-1), except jumps, whose target boundary is
+# kept in a small per-row dict
+_BP_START, _BP_NONE, _BP_INS, _BP_MATCH, _BP_DEL, _BP_JUMP = range(6)
 
 
 TIME_TOL = 3.0     # s: LRC line times are this rough before a penalty starts
@@ -109,76 +130,98 @@ def match(lyric_lines: list[str], asr: list[AsrSegment], line_times: list[float]
     N = len(aw)
     if not M or not N:
         return Structure([], 0.0, 0.0, 0, N, lyric_lines)
-    sim = _sim_matrix([w[2] for w in aw], lw)
-    pen = None
+    sim_rows, a_ids = _sim_rows([w[2] for w in aw], lw)
+    lt = None
     if line_times is not None:
         lt = [line_times[line_of[q]] + offset for q in range(M)]
-        pen = [[min(TIME_CAP, TIME_RATE * max(0.0, abs(t0 - lt[q]) - TIME_TOL)) for q in range(M)]
-               for t0, _, _ in aw]
 
     NEG = -1e18
-    # V[p]: best score with p = index of the next lyric word to sing; bp[n][p] = (kind, prev p)
-    V = [NEG] * (M + 1)
-    V[0] = 0.0
-    bps: list[list[tuple[str, int]]] = []
+    stride = M + 1
+    # V[p]: best score with p = index of the next lyric word to sing.  Scores live in two
+    # rolling rows; backpointers are one uint8 per cell (~1 B/cell instead of a
+    # (str, int) tuple per cell, ~115 B/cell).
+    bp = bytearray([_BP_NONE]) * ((N + 1) * stride)
+    bp[0:stride] = bytes([_BP_START]) * stride
+    jump_to: list[dict[int, int]] = [{} for _ in range(N + 1)]
 
-    def epsilon(V, bp):
+    V = [NEG] * stride
+    V[0] = 0.0
+
+    def epsilon(V, n):
+        base = n * stride
         # deletions (skip lyric word p) sweep forward
-        for p in range(1, M + 1):
+        for p in range(1, stride):
             v = V[p - 1] + DELETE
             if v > V[p]:
-                V[p], bp[p] = v, ("del", p - 1)
+                V[p] = v
+                bp[base + p] = _BP_DEL
         # backward jumps (repeats): from the best boundary after s to the start s
+        jr = jump_to[n]
         best_b, best_v = -1, NEG
         for b in reversed(boundary):
             if b in start_set and best_b >= 0:
                 vb = best_v + JUMP
                 if vb > V[b]:
-                    V[b], bp[b] = vb, ("jump", best_b)
+                    V[b] = vb
+                    bp[base + b] = _BP_JUMP
+                    jr[b] = best_b
             if V[b] > best_v and b > 0:
                 best_b, best_v = b, V[b]
 
-    bp0: list[tuple[str, int]] = [("start", -1)] * (M + 1)
-    epsilon(V, bp0)
-    bps.append(bp0)
+    epsilon(V, 0)
     for n in range(N):
-        W = [NEG] * (M + 1)
-        bp: list[tuple[str, int]] = [("none", -1)] * (M + 1)
-        row = sim[n]
-        prow = pen[n] if pen is not None else None
-        for p in range(M + 1):
+        W = [NEG] * stride
+        base = (n + 1) * stride
+        row = sim_rows[a_ids[n]]
+        if lt is not None:
+            t0 = aw[n][0]
+            prow: list[float] | None = [min(TIME_CAP, TIME_RATE * max(0.0, abs(t0 - lt[q]) - TIME_TOL))
+                                        for q in range(M)]
+        else:
+            prow = None
+        # match pass then ins pass: match writes W[p+1] (still NEG when read), ins reads
+        # W[p] possibly match-written at p-1 - same values and tie order as one fused loop
+        if prow is None:
+            for p, s in enumerate(row):
+                v = V[p] + (2 * s - 1 if s >= MIN_SIM else -1.5)
+                if v > W[p + 1]:
+                    W[p + 1] = v
+                    bp[base + p + 1] = _BP_MATCH
+        else:
+            for p, s in enumerate(row):
+                v = V[p] + (2 * s - 1 if s >= MIN_SIM else -1.5) - prow[p]
+                if v > W[p + 1]:
+                    W[p + 1] = v
+                    bp[base + p + 1] = _BP_MATCH
+        for p in range(stride):
             v = V[p] + INSERT
             if v > W[p]:
-                W[p], bp[p] = v, ("ins", p)
-            if p < M:
-                s = row[p]
-                v = V[p] + (2 * s - 1 if s >= MIN_SIM else -1.5) - (prow[p] if prow else 0.0)
-                if v > W[p + 1]:
-                    W[p + 1], bp[p + 1] = v, ("match", p)
-        epsilon(W, bp)
-        bps.append(bp)
+                W[p] = v
+                bp[base + p] = _BP_INS
+        epsilon(W, n + 1)
         V = W
 
     # end anywhere, but unsung remaining words cost half a deletion each
-    end_p = max(range(M + 1), key=lambda p: V[p] + 0.5 * DELETE * (M - p))
+    end_p = max(range(stride), key=lambda p: V[p] + 0.5 * DELETE * (M - p))
     score = V[end_p]
 
     # backtrace -> list of (kind, lyric word index, asr word index)
     events: list[tuple[str, int, int]] = []
     n, p = N, end_p
     while True:
-        kind, q = bps[n][p]
-        if kind == "start":
+        c = bp[n * stride + p]
+        if c == _BP_START:
             break
-        if kind == "match":
-            events.append(("match", q, n - 1))
-            n, p = n - 1, q
-        elif kind == "ins":
-            n, p = n - 1, q
-        elif kind == "del":
-            events.append(("del", q, -1))
-            p = q
-        elif kind == "jump":
+        if c == _BP_MATCH:
+            events.append(("match", p - 1, n - 1))
+            n, p = n - 1, p - 1
+        elif c == _BP_INS:
+            n -= 1
+        elif c == _BP_DEL:
+            events.append(("del", p - 1, -1))
+            p -= 1
+        elif c == _BP_JUMP:
+            q = jump_to[n][p]
             events.append(("jump", q, -1))
             p = q
         else:  # unreachable state
