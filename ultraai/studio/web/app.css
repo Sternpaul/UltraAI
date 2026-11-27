@@ -91,6 +91,11 @@ dialog textarea { width: 100%; font-family: ui-monospace, Consolas, monospace; r
   max-width: min(90vw, 700px);
 }
 #toast.show { opacity: .95; }
+#toast.has-action { pointer-events: auto; }
+#toast .toast-action {
+  margin-left: 10px; padding: 2px 10px; border-radius: 6px; border: 1px solid currentColor;
+  background: transparent; color: inherit; font: inherit; cursor: pointer;
+}
 
 a.button-like { text-decoration: none; color: var(--fg); padding: 5px 10px; border-radius: 6px; border: 1px solid transparent; }
 a.button-like:hover { border-color: var(--accent); }

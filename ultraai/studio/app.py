@@ -186,6 +186,16 @@ def issue_key(i: dict) -> str:
     return f"{i.get('kind')}:{i.get('start', 0):.2f}:{(i.get('text') or '')[:24]}"
 
 
+def validate_problems(song, folder) -> tuple[list[str], list[dict]]:
+    """User-facing validation problems of a saved txt: plain strings (legacy clients)
+    plus structured details (level/code/message/voice/line/beat) for the editor's
+    Issues tab with jump-to."""
+    issues = [i for i in validate(song, folder) if i.level in ("error", "warning")]
+    details = [{"level": i.level, "code": i.code, "message": i.message,
+                "voice": i.voice, "line": i.line, "beat": i.beat} for i in issues]
+    return [str(i) for i in issues], details
+
+
 def create_app(settings: Settings, processor_factory=None, start_queue: bool = True,
                token: str | None = None, port: int = 8766) -> FastAPI:
     lib = Library(Path(settings.library))
@@ -430,6 +440,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         if txt is None:
             raise HTTPException(404, "song has not been processed yet")
         song = read(txt)
+        problems, problem_details = validate_problems(song, txt.parent)
         side = {}
         sp = txt.with_suffix(".ultraai.json")
         if sp.exists():
@@ -443,6 +454,7 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         base = f"/api/songs/{sid}/media"
         return {"doc": song_to_doc(song), "issues": issues, "state": st.state, "dismissed": st.dismissed,
                 "doc_version": st.doc_version,
+                "problems": problems, "problem_details": problem_details,
                 "audio": f"{base}/audio" if st.audio or song.audio else None,
                 "vocals": f"{base}/vocals" if (sd / "vocals.ogg").exists() else None,
                 "editor": f"{base}/editor" if (sd / "editor.json").exists() else None,
@@ -466,8 +478,9 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         text = dumps(song)
         lib.save_version(sid, text, body.note or "edit")
         atomic_write(txt, text.encode("utf-8"))
-        problems = [str(i) for i in validate(read(txt), txt.parent) if i.level in ("error", "warning")]
-        return {"ok": True, "problems": problems, "saved": time.time(), "doc_version": st.doc_version}
+        problems, problem_details = validate_problems(read(txt), txt.parent)
+        return {"ok": True, "problems": problems, "problem_details": problem_details,
+                "saved": time.time(), "doc_version": st.doc_version}
 
     @app.post("/api/songs/{sid}/issues/dismiss")
     def dismiss(sid: str, body: KeyIn):
