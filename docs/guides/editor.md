@@ -66,7 +66,7 @@ Repeats tabs. Bottom: overview strip (click to seek).
 
 ## Toolbar
 
-★ Golden notes… re-places golden notes (jumps / long holds / highest notes / mix).
+★ Golden notes… re-places golden notes (jumps / long holds / highest notes / mix); the label next to it shows the current choice (★ preset · share %, or ★ custom after hand-toggling a note with G) and is saved with the song.
 *USDB* shows the txt ready for usdb.animux.de (the `#VIDEO` tags with the YouTube id and
 cover link) — copy or save it.
 
