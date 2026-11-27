@@ -11,7 +11,9 @@ JOBDIR/job.json (written by the Studio)::
 Results in JOBDIR/out/: song.txt, song.ultraai.json (issues, sources), vocals.ogg (for the
 editor), editor.json (pitch curve, waveform peaks, Whisper words).  Progress in
 JOBDIR/status.json: {"state": queued|running|done|needs_lyrics|error, "stage", "error", ...}.
-Jobs run one at a time per machine (file lock); expensive steps are cached per audio file,
+Jobs are serialized per audio file (sharded lock files under CACHE_DIR/locks/);
+ULTRAAI_MAX_JOBS bounds how many different songs run at once on this machine (default 1 =
+one at a time, as before).  Expensive steps are cached per audio file,
 so re-running a job with new lyrics takes seconds.
 
 Lyrics come from the job's "lyrics" (user-pasted) when present, else LRCLIB, else —
@@ -22,6 +24,9 @@ last because caption text rarely matches the sung lyrics (measured, see BENCHMAR
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import itertools
 import json
 import os
 import subprocess
@@ -30,7 +35,7 @@ import traceback
 from pathlib import Path
 
 from . import config
-from .audio import CACHE_DIR, DEFAULT_SEPARATION
+from .audio import CACHE_DIR, DEFAULT_SEPARATION, file_hash
 
 STATES = ("queued", "running", "done", "needs_lyrics", "error")
 
@@ -49,22 +54,125 @@ def read_status(job: Path) -> dict:
         return {"state": "queued"}
 
 
+def _acquire(f, blocking: bool = True) -> bool:
+    """flock(LOCK_EX) on an open file (POSIX). Isolated as a seam so tests can fake it."""
+    import fcntl
+
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+    except OSError:
+        return False
+    return True
+
+
+def _release(f) -> None:
+    import fcntl
+
+    try:
+        fcntl.flock(f, fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
 class _Lock:
-    """Exclusive machine-wide lock: one heavy job at a time."""
+    """Exclusive lock on a file: the global lock, or a per-audio-hash lock."""
 
     def __init__(self, path: Path):
         self.path = path
 
     def __enter__(self):
-        import fcntl
-
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.f = open(self.path, "w")
-        fcntl.flock(self.f, fcntl.LOCK_EX)
+        if not _acquire(self.f):  # as before: a job never proceeds without its lock
+            self.f.close()
+            raise OSError(f"cannot acquire lock: {self.path}")
         return self
 
     def __exit__(self, *exc):
+        _release(self.f)
         self.f.close()
+
+
+class _Slots:
+    """Machine-wide counting semaphore: at most ``n`` of the slot lock files held at once."""
+
+    def __init__(self, n: int, dir: Path | None = None):
+        self.n = n
+        self.dir = dir if dir is not None else SLOTS_DIR
+        self.f = None
+
+    def __enter__(self):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        while self.f is None:
+            for i in range(self.n):
+                f = open(self.dir / f"slot-{i}.lock", "w")
+                if _acquire(f, blocking=False):
+                    self.f = f
+                    return self
+                f.close()
+            time.sleep(0.05)
+        return self
+
+    def __exit__(self, *exc):
+        if self.f is not None:
+            _release(self.f)
+            self.f.close()
+            self.f = None
+
+
+LOCKS_DIR = CACHE_DIR / "locks"
+SLOTS_DIR = LOCKS_DIR / "slots"
+GLOBAL_LOCK = CACHE_DIR / "worker.lock"  # max_jobs=1: the whole job; max_jobs>1: shared resources only
+PAUSED_FILE = CACHE_DIR / "background.paused"  # background units frozen by jobs, not yet thawed
+PRESENCE_DIR = LOCKS_DIR / "background"  # per-job flock files: which jobs are inside _background_guard
+_guard_ids = itertools.count()  # unique _background_guard presence file names per process
+
+
+def max_jobs() -> int:
+    """ULTRAAI_MAX_JOBS (>= 1); unreadable values fall back to 1 (one job at a time, as before)."""
+    try:
+        return max(1, config.get_int("max_jobs"))
+    except ValueError:
+        return 1
+
+
+def subprocess_env() -> dict:
+    """Environment for subprocesses spawned by the heavy steps: with several jobs in parallel
+    (ULTRAAI_MAX_JOBS > 1) each one gets cores/max_jobs OpenMP threads.  os.environ itself is
+    never modified; max_jobs=1 adds nothing (exactly as before)."""
+    env = dict(os.environ)
+    mj = max_jobs()
+    if mj > 1 and "OMP_NUM_THREADS" not in env:
+        env["OMP_NUM_THREADS"] = str(max(1, (os.cpu_count() or 1) // mj))
+    return env
+
+
+def _audio_hash(job: Path, spec: dict) -> str:
+    """sha1[:16] of the job's audio file — the cache/work dir key (audio.file_hash)."""
+    try:
+        return file_hash(job / str(spec.get("audio") or ""))
+    except OSError:
+        return hashlib.sha1(str(spec.get("id") or "job").encode("utf-8")).hexdigest()[:16]
+
+
+@contextlib.contextmanager
+def _job_locks(job: Path, spec: dict):
+    """Hold the job's locks: serialize per audio hash, bound the machine to max_jobs jobs.
+
+    max_jobs == 1: the legacy single global lock (worker.lock) — byte-identical to before.
+    max_jobs > 1: a per-audio-hash lock (locks/<sha1[:16]>.lock) so the same song never runs
+    twice (its cache dir is only touched under it), plus the slot semaphore for the global
+    bound; the global lock is then only held briefly, for shared resources (_background_guard,
+    _save_rates).
+    """
+    mj = max_jobs()
+    if mj <= 1:
+        with _Lock(GLOBAL_LOCK):
+            yield
+        return
+    with _Lock(LOCKS_DIR / f"{_audio_hash(job, spec)}.lock"):
+        with _Slots(mj):
+            yield
 
 
 def lyrics_candidates(text: str, artist: str, title: str):
@@ -141,6 +249,27 @@ def apply_options(spec: dict) -> dict:
 RATES_FILE = CACHE_DIR / "stage_rates.json"
 
 
+def _atomic_json(path: Path, obj) -> None:
+    tmp = path.parent / (path.name + ".tmp")
+    tmp.write_text(json.dumps(obj), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _save_rates(rates: dict) -> None:
+    """Persist learned stage rates atomically (tmp+replace).  With max_jobs > 1 the global lock
+    is taken and the file re-read, so parallel workers merge their entries instead of
+    clobbering each other; with max_jobs=1 the job already holds the global lock."""
+    if max_jobs() > 1:
+        with _Lock(GLOBAL_LOCK):
+            try:
+                rates = {**json.loads(RATES_FILE.read_text(encoding="utf-8")), **rates}
+            except (OSError, ValueError):
+                pass
+            _atomic_json(RATES_FILE, rates)
+    else:
+        _atomic_json(RATES_FILE, rates)
+
+
 def _env_list(key: str) -> list[str]:
     return config.get_list(key)
 _current: "Progress | None" = None
@@ -210,7 +339,7 @@ class Progress:
             k = f"{self.cur['key']}:{self.sep}" if self.cur["key"] == "separate" else self.cur["key"]
             self.rates[k] = round(0.7 * self._rate(self.cur["key"]) + 0.3 * took / self.duration, 4)
             try:
-                RATES_FILE.write_text(json.dumps(self.rates))
+                _save_rates(self.rates)
             except OSError:
                 pass
         else:
@@ -304,6 +433,88 @@ def resume_background(units: list[str]) -> None:
         log.info("resumed background work: %s", ", ".join(units))
 
 
+def _read_paused() -> list[str]:
+    """Background units frozen by job guards and not yet thawed (shared across processes)."""
+    try:
+        d = json.loads(PAUSED_FILE.read_text(encoding="utf-8"))
+        return sorted({str(u) for u in d.get("units") or []})
+    except (OSError, ValueError):
+        return []
+
+
+def _write_paused(units: list[str]) -> None:
+    _atomic_json(PAUSED_FILE, {"units": units})
+
+
+def _others_inside() -> bool:
+    """True while another job is inside _background_guard: it holds the flock of its own
+    file under PRESENCE_DIR.  The OS drops that flock when a process dies (Studio cancel
+    kills the worker), so a killed job never counts as inside and needs no recovery —
+    unlocked leftovers of dead jobs are removed here."""
+    for p in PRESENCE_DIR.glob("*.lock"):
+        try:
+            f = open(p, "w")
+        except OSError:
+            return True  # unreadable: assume somebody is in there
+        try:
+            if not _acquire(f, blocking=False):
+                return True
+            try:
+                f.close()
+                p.unlink()
+            except OSError:
+                pass
+        finally:
+            _release(f)
+    return False
+
+
+@contextlib.contextmanager
+def _background_guard():
+    """Freeze the background systemd units while jobs run, without a shared refcount that
+    a killed worker could leak (Studio cancel kills the process, no finally).  Each job
+    freezes (pause_background is idempotent via FreezerState) and every job thaws what is
+    recorded — but only when it is the last one to leave, i.e. no other guard still holds
+    its presence flock (a per-job lock file: released by the OS even on SIGKILL; the
+    freeze record and the entry/exit sections live under the global lock).  With
+    max_jobs=1 this is the legacy behavior: pause on start, thaw on exit."""
+    if max_jobs() <= 1:
+        paused = pause_background()
+        try:
+            yield
+        finally:
+            resume_background(paused)
+        return
+    me = PRESENCE_DIR / f"job-{os.getpid()}-{next(_guard_ids)}.lock"
+    with _Lock(GLOBAL_LOCK):
+        me.parent.mkdir(parents=True, exist_ok=True)
+        f = open(me, "w")  # our presence: held while the job runs, dropped by the OS on kill
+        _acquire(f)
+        try:
+            _write_paused(sorted(set(_read_paused()) | set(pause_background())))
+        except BaseException:
+            _release(f)
+            f.close()
+            raise
+    try:
+        yield
+    finally:
+        with _Lock(GLOBAL_LOCK):
+            _release(f)
+            f.close()
+            try:
+                me.unlink()
+            except OSError:
+                pass
+            if not _others_inside():
+                thaw = _read_paused()
+                try:
+                    PAUSED_FILE.unlink()
+                except OSError:
+                    pass
+                resume_background(thaw)
+
+
 def process(job: Path) -> dict:
     job = Path(job)
     spec = json.loads((job / "job.json").read_text(encoding="utf-8"))
@@ -314,8 +525,7 @@ def process(job: Path) -> dict:
              spec.get("separation") or DEFAULT_SEPARATION)
     write_status(job, "queued", stage="Waiting for the server (another song is being processed)")
     try:
-        with _Lock(CACHE_DIR / "worker.lock"):
-            paused = pause_background()
+        with _job_locks(job, spec), _background_guard():
             try:
                 result = _process(job, spec, out)
             except Exception as exc:  # noqa: BLE001 - reported to the Studio
@@ -325,8 +535,6 @@ def process(job: Path) -> dict:
                 write_status(job, "error", error=f"{type(exc).__name__}: {exc}",
                              traceback=traceback.format_exc()[-3000:])
                 raise
-            finally:
-                resume_background(paused)
         return result
     finally:
         logging.getLogger().removeHandler(handler)
@@ -355,7 +563,7 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
     log.info("options: %s", opts or "defaults")
     pr = _current = Progress(job, duration, sep)
     pr.start("separate")
-    separate(audio, sep, need_instrumental=False)
+    separate(audio, sep, need_instrumental=False, env=subprocess_env())
     pr.start("analyse")
     a = analyse(audio, sep)
     pitch_checks = [m for m in _env_list("pitch_check") if m != config.get("pitch")]
@@ -368,7 +576,7 @@ def _process(job: Path, spec: dict, out: Path) -> dict:
         for m in pitch_checks:
             pitch_track(a.vocals, a.wave, m)
         for m in sep_checks:
-            v2, _ = separate(audio, m, need_instrumental=False)
+            v2, _ = separate(audio, m, need_instrumental=False, env=subprocess_env())
             pitch_track(v2, load_mono(v2, 16000), config.get("pitch"))
     else:
         pr.skip("checks", "not chosen")
@@ -459,7 +667,7 @@ def _editor_media(a, asr, out: Path) -> None:
     ogg = out / "vocals.ogg"
     if not ogg.exists():
         subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(a.vocals), "-ac", "1",
-                        "-c:a", "libopus", "-b:a", "64k", str(ogg)], check=True)
+                        "-c:a", "libopus", "-b:a", "64k", str(ogg)], check=True, env=subprocess_env())
     w = np.abs(np.asarray(a.wave, dtype=np.float32))
     hop = int(16000 * PEAK_HOP_S)
     n = len(w) // hop
