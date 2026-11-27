@@ -94,6 +94,8 @@ function library() {
       acts.push(h("button", { type: "button", class: "ghost small", title: "Process again", onclick: () => reprocess(s) }, "↻"));
     if (["needs_review", "reviewed", "error"].includes(s.state))
       acts.push(h("button", { type: "button", class: "ghost small", title: "Replace the lyrics", onclick: () => lyricsDialog(s.id, load) }, "Lyrics"));
+    acts.push(h("button", { type: "button", class: "ghost small", title: "Saved versions of the song text", "aria-label": `Versions of ${s.title}`,
+      onclick: () => versionsDialog(s, load) }, "🕘"));
     if (/^https?:/.test(s.source || "") && (!s.video || !s.cover) && s.state !== "downloading")
       acts.push(h("button", { type: "button", class: "ghost small", title: "Download the music video and cover (Settings decide the quality)",
         onclick: () => getExtras(s) }, "Video"));
@@ -360,6 +362,31 @@ export async function lyricsDialog(id, after) {
     try { await api(`/api/songs/${id}/lyrics`, { method: "POST", json: { text: ta.value } }); toast("Lyrics saved – processing again"); after?.(); }
     catch (e) { toast(e.message); }
   }, { once: true });
+}
+
+// ------------------------------------------------------------------ versions dialog
+async function versionsDialog(s, after) {
+  const dlg = document.getElementById("versions-dialog");
+  const list = document.getElementById("versions-list");
+  document.getElementById("versions-title").textContent = `Versions – ${s.artist} – ${s.title}`;
+  list.replaceChildren(h("li", { class: "muted" }, "Loading…"));
+  dlg.showModal();
+  let vs;
+  try { vs = await api(`/api/songs/${s.id}/versions`); }
+  catch (e) { list.replaceChildren(h("li", { class: "muted" }, e.message)); return; }
+  list.replaceChildren(...(vs.length ? vs.map(v => h("li", {},
+    h("span", {}, v.name, " ", h("span", { class: "meta" },
+      `${new Date(v.mtime * 1000).toLocaleString()} · ${(v.size / 1024).toFixed(1)} KiB${v.what ? ` · ${v.what}` : ""}`)),
+    h("button", { type: "button", class: "small", onclick: async () => {
+      if (!confirm(`Restore ${v.name}? The current text is saved as a new version first.`)) return;
+      try {
+        await api(`/api/songs/${s.id}/versions/${encodeURIComponent(v.name)}/restore`, { method: "POST" });
+        toast(`Restored ${v.name}`);
+        dlg.close();
+        after?.();
+      } catch (e) { toast(e.message); }
+    } }, "Restore"))
+  ) : [h("li", { class: "muted" }, "No versions yet — every save in the editor creates one.")]));
 }
 
 // ------------------------------------------------------------------ settings

@@ -82,28 +82,69 @@ class Library:
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._index: dict[str, Path] = {}
+        # scan cache: folder name -> (folder mtime_ns, song.json (mtime_ns, size) | None, sid, sid_from_json)
+        self._scan_cache: dict[str, tuple] = {}
+        self._root_mtime: int | None = None
+        self.scan_reads = 0  # how often scan() read a song.json content (diagnostics/tests)
 
     # ---- lookup ------------------------------------------------------------
     def scan(self) -> dict[str, Path]:
-        """id -> folder.  Folders without Studio state get a stable id from their name."""
+        """id -> folder.  Folders without Studio state get a stable id from their name.
+
+        Cached: on a warm scan only iterdir + stat per folder happen; a song.json is
+        re-read only when its (mtime, size) changed.  The cache is rebuilt in full on
+        the first call and whenever the library root mtime changed (folders added,
+        removed or renamed).
+        """
         with self._lock:
+            try:
+                root_mtime = self.root.stat().st_mtime_ns
+            except OSError:
+                root_mtime = None
+            if not self._index or self._root_mtime != root_mtime:
+                self._scan_cache = {}
+                self._root_mtime = root_mtime
             idx = {}
             for folder in sorted(p for p in self.root.iterdir() if p.is_dir() and not p.name.startswith(".")):
-                st_file = folder / ".studio" / "song.json"
-                sid = None
-                if st_file.exists():
-                    try:
-                        sid = json.loads(st_file.read_text(encoding="utf-8"))["id"]
-                    except (ValueError, KeyError, TypeError, OSError) as exc:
-                        log.warning("song state %s was corrupt (%s); quarantined", st_file, exc)
-                        quarantine(st_file)
-                        sid = None
-                if sid is None and any(folder.glob("*.txt")):
-                    sid = "x" + uuid.uuid5(uuid.NAMESPACE_URL, folder.name).hex[:11]
+                sid = self._scan_folder(folder)
                 if sid is not None:
                     idx[sid] = folder
             self._index = idx
             return dict(idx)
+
+    def _scan_folder(self, folder: Path) -> str | None:
+        """sid for one folder; reuses the cached entry (no file content read) when neither
+        the folder mtime nor the song.json (mtime, size) changed."""
+        prev = self._scan_cache.get(folder.name)
+        try:
+            fm = folder.stat().st_mtime_ns
+        except OSError:
+            fm = None
+        st_file = folder / ".studio" / "song.json"
+        try:
+            st = st_file.stat()
+            sj: tuple | None = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            sj = None
+        if prev is not None and prev[0] == fm and prev[1] == sj:
+            return prev[2]
+        sid, from_json = None, False
+        if sj is not None and (prev is None or prev[1] != sj):
+            self.scan_reads += 1  # the only place scan() reads file content
+            try:
+                sid = json.loads(st_file.read_bytes())["id"]  # bytes: read_text is ~60x slower here
+                from_json = True
+            except (ValueError, KeyError, TypeError, OSError) as exc:
+                log.warning("song state %s was corrupt (%s); quarantined", st_file, exc)
+                quarantine(st_file)
+                sid = None
+        elif prev is not None and prev[1] == sj and prev[3]:
+            sid = prev[2]  # song.json unchanged: keep its id without re-reading
+        if sid is None and (prev is None or prev[0] != fm or prev[1] != sj):
+            if any(folder.glob("*.txt")):
+                sid = "x" + uuid.uuid5(uuid.NAMESPACE_URL, folder.name).hex[:11]
+        self._scan_cache[folder.name] = (fm, sj, sid, from_json)
+        return sid
 
     def folder(self, sid: str) -> Path:
         with self._lock:
@@ -118,7 +159,7 @@ class Library:
         f = folder / ".studio" / "song.json"
         if f.exists():
             try:
-                return SongState.from_dict(json.loads(f.read_text(encoding="utf-8")))
+                return SongState.from_dict(json.loads(f.read_bytes()))
             except (ValueError, TypeError, KeyError, OSError) as exc:
                 log.warning("song state %s was corrupt (%s); quarantined, using defaults", f, exc)
                 quarantine(f)
@@ -307,8 +348,44 @@ class Library:
             return st
 
     def versions(self, sid: str) -> list[dict]:
+        """Every saved version, oldest first: [{name, mtime, size, what}]."""
         d = self.studio_dir(sid) / "versions"
-        return [{"name": p.name, "time": p.stat().st_mtime} for p in sorted(d.glob("*.txt"))] if d.exists() else []
+        out = []
+        if d.exists():
+            for p in sorted(d.glob("*.txt")):
+                m = re.match(r"^[0-9]+-(.+)$", p.name)
+                st = p.stat()
+                out.append({"name": p.name, "mtime": st.st_mtime, "size": st.st_size,
+                            "what": m.group(1)[:-len(".txt")] if m else ""})
+        return out
+
+    VERSION_NAME = re.compile(r"^[0-9]+-[A-Za-z0-9_.-]+$")
+
+    def version_file(self, sid: str, name: str) -> Path:
+        """The version file for ``name`` — validated against VERSION_NAME and confined to
+        the song's versions dir (no traversal); ValueError on a bad name, KeyError if absent."""
+        if not self.VERSION_NAME.match(name):
+            raise ValueError(f"bad version name {name!r}")
+        d = (self.folder(sid) / ".studio" / "versions").resolve()
+        p = (d / name).resolve()
+        if p.parent != d or not p.is_file():
+            raise KeyError(name)
+        return p
+
+    def restore_version(self, sid: str, name: str) -> dict:
+        """Copy version ``name`` over the current txt (atomically), after saving the current
+        txt as a new 'pre-restore' version; bumps doc_version so open editors get a 409."""
+        with self._lock:
+            v = self.version_file(sid, name)  # ValueError -> 400, KeyError -> 404
+            txt = self.txt_path(sid)
+            if txt is None:
+                raise KeyError("the song has no txt yet")
+            backup = self.save_version(sid, txt.read_text(encoding="utf-8"), "pre-restore")
+            atomic_write(txt, v.read_bytes())
+            st = self.state(sid)
+            st.doc_version += 1
+            self.save_state(st)
+            return {"ok": True, "restored": name, "backup": backup.name, "doc_version": st.doc_version}
 
 
 def youtube_id(url: str) -> str | None:
