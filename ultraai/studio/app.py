@@ -613,12 +613,20 @@ def create_app(settings: Settings, processor_factory=None, start_queue: bool = T
         return ring.since(after, LEVELS.get(level, logging.INFO))
 
     @app.get("/api/songs/{sid}/worker-log")
-    def worker_log(sid: str):
+    def worker_log(sid: str, after: int = 0):
+        """The song's server log.  While the job runs a background tailer keeps filling the
+        file, so this returns partial content live; ``?after=<bytes>`` returns only the bytes
+        past that offset (for incremental polling) plus X-Total-Size with the full size."""
         get_state(sid)
         f = lib.folder(sid) / ".studio" / "worker.log"
         from fastapi.responses import PlainTextResponse
 
-        return PlainTextResponse(f.read_text(encoding="utf-8", errors="replace") if f.exists() else "")
+        data = f.read_bytes() if f.exists() else b""
+        if after < 0:
+            after = 0
+        resp = PlainTextResponse(data[after:].decode("utf-8", "replace"))
+        resp.headers["X-Total-Size"] = str(len(data))
+        return resp
 
     if WEB.exists():
         from fastapi.staticfiles import StaticFiles

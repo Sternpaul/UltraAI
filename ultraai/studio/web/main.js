@@ -162,7 +162,71 @@ function fmtDur(sec) {
 
 // ------------------------------------------------------------------ processing steps dialog
 let stepsFor = null;
+let stepsLog = null;  // live worker-log poller of the open steps dialog: {id, pre, sum, bytes, lines, timer, live, busy}
 const STEP_ICON = { done: "✓", running: "●", pending: "○", skipped: "–", error: "✕" };
+
+// Cap of lines kept in the live <pre>: a long job must not grow the DOM without bound.
+// 2000 lines ~ tens of KB of text, plenty for a session glimpse; anything older is dropped
+// from the view only (the full log stays in <song>/.studio/worker.log).
+const MAX_LOG_LINES = 2000;
+
+function stopStepsLog() {
+  if (stepsLog?.timer) clearInterval(stepsLog.timer);
+  if (stepsLog) stepsLog.sum.textContent = "Server log of this song";
+  stepsLog = null;
+}
+
+// Append text to the live <pre> without rebuilding its whole textContent every poll, and
+// trim the oldest lines in batches of MAX_LOG_LINES so the trim itself stays cheap.
+function appendWorkerLog(sl, text) {
+  sl.pre.appendChild(document.createTextNode(text));
+  sl.lines += (text.match(/\n/g) || []).length;
+  if (sl.lines > MAX_LOG_LINES * 2) {
+    const lines = sl.pre.textContent.split("\n");
+    sl.pre.textContent = lines.slice(-MAX_LOG_LINES).join("\n");
+    sl.lines = Math.min(sl.lines, MAX_LOG_LINES);
+  }
+  sl.pre.scrollTop = sl.pre.scrollHeight;
+}
+
+// One worker-log fetch; full=true reloads from byte 0, otherwise appends only the bytes past sl.bytes.
+async function fetchWorkerLog(sl, full) {
+  const r = await fetch(`/api/songs/${sl.id}/worker-log${full ? "" : `?after=${sl.bytes}`}`);
+  const text = await r.text();
+  if (!r.ok) throw new Error(text || `${r.status}`);
+  const total = Number(r.headers.get("x-total-size"));
+  if (full) {
+    sl.pre.textContent = text || "No server log yet (it arrives with the results).";
+    sl.lines = (sl.pre.textContent.match(/\n/g) || []).length;
+    sl.pre.scrollTop = sl.pre.scrollHeight;
+  } else if (text) appendWorkerLog(sl, text);
+  sl.bytes = Number.isFinite(total) ? total : sl.bytes + new TextEncoder().encode(text).length;
+}
+
+// While the song is processing/downloading the server log streams live: poll ?after=<bytes>
+// every 3 s and append; show "(live)".  When the job reaches a final state, grab the last
+// bytes once and stop (the server then serves the authoritative final copy).
+function setStepsLogLive(sl, live) {
+  if (!stepsLog || stepsLog.id !== sl.id) return;
+  // Unchanged flag: keep the existing poll timer — refreshSteps calls this every ~3 s and
+  // clearing/re-creating the interval each time would reset the poll before it ever fires.
+  if (live === sl.live) return;
+  const wasLive = sl.live;
+  sl.live = live;
+  sl.sum.textContent = live ? "Server log of this song (live)" : "Server log of this song";
+  if (sl.timer) { clearInterval(sl.timer); sl.timer = null; }
+  if (live) {
+    sl.timer = setInterval(async () => {
+      if (!stepsLog || stepsLog.id !== sl.id || stepsLog.busy) return;
+      stepsLog.busy = true;
+      try { await fetchWorkerLog(stepsLog, false); } catch { /* retried on the next tick */ }
+      finally { stepsLog.busy = false; }
+    }, 3000);
+  } else if (wasLive) {
+    fetchWorkerLog(sl, false).catch(() => {});
+  }
+}
+
 async function stepsDialog(id) {
   stepsFor = id;
   const dlg = document.getElementById("steps-dialog");
@@ -171,14 +235,19 @@ async function stepsDialog(id) {
   fillSteps(s);
   const det = document.getElementById("steps-log");
   det.open = false;
+  stopStepsLog();
   det.ontoggle = async () => {
-    if (!det.open) return;
+    if (!det.open) { stopStepsLog(); return; }
     const pre = det.querySelector("pre");
+    const sl = stepsLog = { id, pre, sum: det.querySelector("summary"), bytes: 0, lines: 0, timer: null, live: false, busy: false };
     pre.textContent = "Loading…";
-    try { pre.textContent = (await api(`/api/songs/${id}/worker-log`)) || "No server log yet (it arrives with the results)."; }
-    catch (e) { pre.textContent = e.message; }
+    try { await fetchWorkerLog(sl, true); }
+    catch (e) { pre.textContent = e.message; return; }
+    let live = false;
+    try { live = ["processing", "downloading"].includes((await api(`/api/songs/${id}`)).state); } catch { /* not live */ }
+    setStepsLogLive(sl, live);
   };
-  dlg.addEventListener("close", () => { stepsFor = null; }, { once: true });
+  dlg.addEventListener("close", () => { stepsFor = null; stopStepsLog(); }, { once: true });
   dlg.showModal();
 }
 function fillSteps(s) {
@@ -204,7 +273,10 @@ function fillSteps(s) {
 function refreshSteps(songs) {
   if (!stepsFor) return;
   const s = songs.find(x => x.id === stepsFor);
-  if (s) fillSteps(s);
+  if (s) {
+    fillSteps(s);
+    if (stepsLog) setStepsLogLive(stepsLog, ["processing", "downloading"].includes(s.state));
+  }
 }
 
 function sessionStorageGet(k) { try { return sessionStorage.getItem(`ultraai.${k}`); } catch { return null; } }
