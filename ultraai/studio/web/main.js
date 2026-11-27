@@ -281,11 +281,11 @@ export async function processDialog(title = "Processing options", start = null) 
         onchange: e => { o[key] = e.target.checked ? [...o[key], m.key] : o[key].filter(x => x !== m.key); refresh(); } }),
       h("span", {}, m.name, m.by ? h("span", { class: "muted" }, ` · ${m.by}`) : null,
         h("div", { class: "muted" }, costText(m.rate)))))));
-  const bs = models.bench_songs || [];
+  const bsN = models.bench_songs_n || 0;
   box.replaceChildren(
-    bs.length ? h("p", { class: "muted benchnote" }, `Scores: % of words timed within 250 ms and % of notes on the right pitch, ` +
-      `measured against hand-made songs. Models with a "N songs" score were tested on many songs, the others only on ` +
-      `${bs.length} (${bs.join(", ")}) - small differences there can be luck. ★ = best measured.`) : null,
+    bsN ? h("p", { class: "muted benchnote" }, `Scores: % of words timed within 250 ms and % of notes on the right pitch, ` +
+      `measured against hand-made songs. Models with an "N songs" score were tested on many songs, the others only on ` +
+      `${bsN} songs - small differences there can be luck. ★ = best measured.`) : null,
     radio("separation", "separation", "Vocal separation"),
     radio("pitch", "pitch", "Pitch model"),
     checks("separation", "sep_check", "separation", "Double-check with these separations"),

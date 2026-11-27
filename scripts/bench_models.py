@@ -18,8 +18,9 @@ import sys
 import time
 from pathlib import Path
 
-SONGS = ["Charli XCX - Apple", "Creedence Clearwater Revival - Have You Ever Seen The Rain",
-         "Wir sind Helden - Denkmal"]
+# Benchmark songs are private: no names in the repo. Pass them via BENCH_SONGS
+# (a file with one song name per line, gitignored) — see scripts/bench_queue.sh.
+SONGS: list[str] = []
 
 BASE = {"ULTRAAI_SEPARATION": "htdemucs", "ULTRAAI_PITCH": "swift", "ULTRAAI_ASR_SEP": "htdemucs",
         "ULTRAAI_PITCH_CHECK": ""}  # double checks only add warnings
@@ -60,6 +61,8 @@ def main(out="out/bench"):
     songs = SONGS
     if os.environ.get("BENCH_SONGS"):  # file with one song name per line
         songs = [ln.strip() for ln in Path(os.environ["BENCH_SONGS"]).read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if not songs:
+        sys.exit("no benchmark songs: set BENCH_SONGS=<file with one song name per line> (names stay local, never committed)")
     configs = CONFIGS + [("sep:htdemucs", "separation", {})]  # baseline, also for other song sets
     for name, kind, env in configs:
         if only and only not in name:
