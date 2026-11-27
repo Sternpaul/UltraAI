@@ -111,7 +111,7 @@ def _patch_pipeline(monkeypatch, tmp_path, *, asr=None, asr_exc=None, vocals=Non
     """Mock every heavy step of worker._process except the lyrics lookup itself."""
     monkeypatch.setattr(lrc, "audio_duration", lambda p: 180.0)
     vocals = vocals or (tmp_path / "vocals.htdemucs.wav")
-    monkeypatch.setattr(audio, "separate", lambda a, m, need_instrumental=True: (vocals, tmp_path / "i.wav"))
+    monkeypatch.setattr(audio, "separate", lambda a, m, need_instrumental=True, **k: (vocals, tmp_path / "i.wav"))
     analysis = types.SimpleNamespace(vocals=vocals, wave=np.zeros(2 * 16000, dtype=np.float32),
                                      emissions=None, pitch=None)
     monkeypatch.setattr("ultraai.generate.analyse", lambda *a, **k: analysis)
